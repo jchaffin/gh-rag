@@ -1,0 +1,2 @@
+export const INCLUDE = ["**/*.md","**/*.txt","**/*.y?(a)ml","**/*.json","**/*.py","**/*.ts","**/*.tsx","**/*.js","**/*.go"];
+export const EXCLUDE = ["**/node_modules/**","**/dist/**","**/.git/**","**/*.min.*","**/*.lock","**/vendor/**","**/build/**"];
