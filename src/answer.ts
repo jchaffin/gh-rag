@@ -16,16 +16,17 @@ export async function answerAboutProject(
   const ctx = await hybridSearch({ workdir, openaiApiKey, pine, repo, query: question });
 
   // Build compact, cited context (cap 12 chunks)
-  const top = (ctx || []).slice(0, 12);
+  const top = (ctx || []).slice(0, 10);
   const used = top.map((c: any) => ({ path: c.path, start: c.start, end: c.end }));
-  const context = top.map((c: any, i: number) =>
-    `(${i + 1}) ${c.path}#L${c.start}-L${c.end}\n${c.text}`
-  ).join("\n\n");
+  const context = top.map((c: any, i: number) => {
+    const snippet = c.text.length > 1200 ? c.text.slice(0, 1200) + "\n…" : c.text;
+    return `(${i + 1}) ${c.path}#L${c.start}-L${c.end}\n${snippet}`;
+  }).join("\n\n");
 
   const sys =
     "You are a senior engineer. Answer ONLY from the provided context. " +
-    "Cite each claim with path#Lstart-Lend. If evidence is insufficient, say \"unknown\". " +
-    "Be concise and technical.";
+    "Always cite with (index) path#Lstart-Lend per claim. If evidence is insufficient, say 'unknown'. " +
+    "Be concise, technical, and specific.";
 
   const user =
     `Question: ${question}\n\n` +
@@ -34,7 +35,7 @@ export async function answerAboutProject(
 
   const openai = new OpenAI({ apiKey: openaiApiKey });
   const res = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
+    model: process.env.OPENAI_CHAT_MODEL || "gpt-4o-mini",
     messages: [
       { role: "system", content: sys },
       { role: "user", content: user }

@@ -5,6 +5,10 @@
   "type": "commonjs",
   "main": "src/index.js",
   "types": "src/types.ts",
+  "bin": {
+    "gh-rag-ask": "./dist/scripts/ask.js",
+    "gh-rag-ingest-all": "./dist/scripts/ingest-all.js"
+  },
   "exports": {
     ".": {
       "import": "./dist/index.js",
@@ -18,7 +22,10 @@
     "build": "tsc && tsc-alias",
     "prepublishOnly": "npm run build",
     "smoke": "npm run build && node dist/scripts/smoke.js",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+    "ingest": "npm run build && node dist/scripts/ingest.js",
+    "ask": "node dist/scripts/ask.js",
+    "ingest:all": "npm run build && node dist/scripts/ingest-all.js"
   },
   "dependencies": {
     "@pinecone-database/pinecone": "^6.1.2",

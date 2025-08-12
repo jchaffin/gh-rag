@@ -1,7 +1,8 @@
 // src/index.ts
-import { ingestRepo } from "@/ingest";
-import { hybridSearch } from "@/search";
-import { answerAboutProject } from "@/answer";
+import { ingestRepo } from "./ingest";
+import { hybridSearch } from "./search";
+import { answerAboutProject } from "./answer";
+import { askFast } from "./ask";
 
 export type CreateOpts = {
   openaiApiKey: string;
@@ -24,6 +25,8 @@ export function createGhRag(opts: CreateOpts & { pine: { index: any } }) {
       }),
     search: (p: { repo: string; query: string }) =>
       hybridSearch({ ...cfg, repo: p.repo, query: p.query }),
+    ask: (p: { repo: string; query: string; limit?: number; includeText?: boolean }) =>
+      askFast({ ...cfg, repo: p.repo, query: p.query, limit: p.limit, includeText: p.includeText }),
     answer: (p: { repo: string; question: string }) =>
       answerAboutProject({ ...cfg, repo: p.repo, question: p.question })
   };

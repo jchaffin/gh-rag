@@ -1,13 +1,10 @@
-// scripts/smoke.ts
+// scripts/ingest.ts
 import { config } from "dotenv";
 import { resolve } from "path";
 import { Pinecone } from "@pinecone-database/pinecone";
-import { simpleGit } from "simple-git";
-import path from "path";
 
 config({ path: resolve(process.cwd(), ".env.local"), override: true });
 
-import { createGhRag } from "../src";
 import { ingestRepo } from "../src/ingest";
 
 function mask(v?: string) {
@@ -22,7 +19,6 @@ async function main() {
     OPENAI_API_KEY,
     PINECONE_API_KEY,
     PINECONE_INDEX = "repo-chunks",
-    GITHUB_TOKEN,
     TEST_REPO = "https://github.com/jchaffin/JobLaunch.git"
   } = process.env;
 
@@ -31,17 +27,8 @@ async function main() {
     process.exit(1);
   }
 
-  // Create Pinecone instance
   const pc = new Pinecone({ apiKey: PINECONE_API_KEY });
   const index = pc.index(PINECONE_INDEX);
-
-  const rag = createGhRag({
-    openaiApiKey: OPENAI_API_KEY,
-    githubToken: GITHUB_TOKEN, // optional
-    pine: {
-      index: index, // Pass the actual index instance, not the string
-    },
-  });
 
   console.time("ingest");
   const ingestRes = await ingestRepo(TEST_REPO, {
@@ -50,16 +37,6 @@ async function main() {
   });
   console.timeEnd("ingest");
   console.log("Ingested:", ingestRes);
-
-  console.time("answer");
-  const res = await rag.answer({
-    repo: ingestRes.repo,
-    question: "Tell me about the API Integrations",
-  });
-  console.timeEnd("answer");
-
-  console.log("\n=== ANSWER ===\n");
-  console.log(res.text);
 }
 
 main().catch((e) => {

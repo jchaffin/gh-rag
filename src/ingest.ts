@@ -11,7 +11,7 @@ const MODEL_DIMS: Record<string, number> = {
   "text-embedding-3-small": 1536,
 };
 const MAX_TOKENS = 8192;
-const CHUNK_TOKENS = 7500; // headroom under limit
+const CHUNK_TOKENS = 4000; // Reduced from 6000 to stay well under 8192 limit
 const BATCH_SIZE = 64;
 
 export type PineCtx = {
@@ -37,9 +37,9 @@ export async function ingestRepo(gitUrlOrPath: string, opts: IngestOpts) {
     if (!match) throw new Error('Invalid GitHub URL');
     
     const [owner, repo] = match[1].split('/');
-    const namespace = opts.pine.namespace ?? repo;
+    const namespace = repo; // Use just the repo name, not owner/repo
     
-    console.log(`Fetching ${owner}/${repo} via GitHub API`);
+    if (process.env.DEBUG) console.log(`Fetching ${owner}/${repo} via GitHub API`);
     
     // Fetch all files recursively from GitHub API
     const allFiles = await fetchAllFilesFromGitHub(owner, repo);
@@ -60,29 +60,30 @@ export async function ingestRepo(gitUrlOrPath: string, opts: IngestOpts) {
     
     // Upsert to Pinecone
     const index = opts.pine.index;
-    console.log("Upserting", records.length, "records to Pinecone");
+    if (process.env.DEBUG) console.log("Upserting", records.length, "records to Pinecone");
     
     for (let i = 0; i < records.length; i += BATCH_SIZE) {
       const sliceRecs = records.slice(i, i + BATCH_SIZE);
       const sliceVecs = vectors.slice(i, i + BATCH_SIZE);
-      console.log(`Upserting batch ${i/BATCH_SIZE + 1}:`, sliceRecs.length, "records");
+      if (process.env.DEBUG) console.log(`Upserting batch ${i/BATCH_SIZE + 1}:`, sliceRecs.length, "records");
       
       await index.upsert(
         sliceRecs.map((r, j) => ({
           id: r.id,
           values: sliceVecs[j],
-          metadata: {
+          metadata: fitMetadata({
             repo: r.repo,
             path: r.path,
             start: r.start,
             end: r.end,
             tokens: r.tokens,
             model: MODEL,
-          },
-        })),
+            text: r.text,
+          }),
+        }))
       );
     }
-    console.log("Pinecone upsert complete");
+    if (process.env.DEBUG) console.log("Pinecone upsert complete");
     
     return { repo, namespace, files: docs.length, chunks: records.length, model: MODEL };
   } else {
@@ -108,29 +109,30 @@ export async function ingestRepo(gitUrlOrPath: string, opts: IngestOpts) {
 
     // Upsert to Pinecone
     const index = opts.pine.index;
-    console.log("Upserting", records.length, "records to Pinecone");
+    if (process.env.DEBUG) console.log("Upserting", records.length, "records to Pinecone");
     
     for (let i = 0; i < records.length; i += BATCH_SIZE) {
       const sliceRecs = records.slice(i, i + BATCH_SIZE);
       const sliceVecs = vectors.slice(i, i + BATCH_SIZE);
-      console.log(`Upserting batch ${i/BATCH_SIZE + 1}:`, sliceRecs.length, "records");
+      if (process.env.DEBUG) console.log(`Upserting batch ${i/BATCH_SIZE + 1}:`, sliceRecs.length, "records");
       
       await index.upsert(
         sliceRecs.map((r, j) => ({
           id: r.id,
           values: sliceVecs[j],
-          metadata: {
+          metadata: fitMetadata({
             repo: r.repo,
             path: r.path,
             start: r.start,
             end: r.end,
             tokens: r.tokens,
             model: MODEL,
-          },
+            text: r.text,
+          }),
         })),
       );
     }
-    console.log("Pinecone upsert complete");
+    if (process.env.DEBUG) console.log("Pinecone upsert complete");
 
     return { repo, namespace, files: files.length, chunks: records.length, model: MODEL };
   }
@@ -211,9 +213,15 @@ async function readFiles(root: string, files: string[]) {
 
 async function fetchAllFilesFromGitHub(owner: string, repo: string): Promise<{ path: string; content: string }[]> {
   const files: { path: string; content: string }[] = [];
+  const processedPaths = new Set<string>();
   
   async function fetchDirectory(path: string = '') {
+    if (processedPaths.has(path)) return;
+    processedPaths.add(path);
+    
     const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+    if (process.env.DEBUG) console.log(`Fetching: ${apiUrl}`);
+    
     const response = await fetch(apiUrl, {
       headers: {
         ...(process.env.GITHUB_TOKEN && { Authorization: `token ${process.env.GITHUB_TOKEN}` }),
@@ -221,21 +229,30 @@ async function fetchAllFilesFromGitHub(owner: string, repo: string): Promise<{ p
       }
     });
     
-    if (!response.ok) throw new Error(`GitHub API error: ${response.status}`);
-    const contents = await response.json();
+    if (!response.ok) {
+      if (process.env.DEBUG) console.log(`Skipping ${path}: ${response.status}`);
+      return;
+    }
+    
+    const contents = (await response.json()) as GhContentItem[];
     
     for (const item of contents) {
-      if (item.type === 'file') {
-        // Skip binary files
-        if (isProbablyTextPath(item.name)) {
-          const fileResponse = await fetch(item.download_url);
+      if (item.type === 'file' && isProbablyTextPath(item.name)) {
+        try {
+          const fileResponse = await fetch(String(item.download_url));
           const content = await fileResponse.text();
           files.push({ path: item.path, content });
+          if (process.env.DEBUG) console.log(`Fetched: ${item.path}`);
+        } catch (e) {
+          if (process.env.DEBUG) console.log(`Failed to fetch ${item.path}:`, e);
         }
       } else if (item.type === 'dir') {
         await fetchDirectory(item.path);
       }
     }
+    
+    // Rate limiting
+    await new Promise(resolve => setTimeout(resolve, 100));
   }
   
   await fetchDirectory();
@@ -250,6 +267,14 @@ type RecordChunk = {
   end: number;   // token end (exclusive)
   tokens: number;
   text: string;
+};
+
+// GitHub /contents API item (directory listing)
+type GhContentItem = {
+  type: "file" | "dir" | "symlink" | "submodule";
+  name: string;
+  path: string;
+  download_url?: string | null;
 };
 
 function chunkDocs(repo: string, docs: { path: string; text: string }[]): RecordChunk[] {
@@ -304,6 +329,41 @@ async function embedBatch(apiKey: string, inputs: string[]): Promise<number[][]>
     const body = await res.text();
     throw new Error(`Embedding API ${res.status}: ${body}`);
   }
-  const json = await res.json();
-  return json.data.map((d: any) => d.embedding as number[]);
+  const json = (await res.json()) as { data: { embedding: number[] }[] };
+  return json.data.map((d) => d.embedding);
+}
+
+// Ensure Pinecone metadata stays under 40KB per vector.
+// Trims the `text` field if necessary and sets a `truncated` flag.
+function fitMetadata<T extends { text?: string }>(meta: T, maxBytes = 40960): T & { truncated?: boolean } {
+  const encodeSize = (m: any) => Buffer.byteLength(JSON.stringify(m), "utf8");
+  let cur: any = { ...meta };
+  let size = encodeSize(cur);
+  if (size <= maxBytes) return cur;
+
+  if (typeof cur.text !== "string" || cur.text.length === 0) {
+    // Nothing we can trim; return as-is (will likely still error, but no better option)
+    return cur;
+  }
+
+  // Binary search the maximum text length that fits under maxBytes
+  const original = cur.text;
+  let lo = 0;
+  let hi = original.length;
+  let best: { obj: any; size: number } | null = null;
+
+  while (lo <= hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    const candidateText = original.slice(0, mid) + "…";
+    const candidate = { ...cur, text: candidateText, truncated: true };
+    const s = encodeSize(candidate);
+    if (s <= maxBytes) {
+      best = { obj: candidate, size: s };
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+
+  return (best?.obj ?? { ...cur, text: "", truncated: true }) as T & { truncated?: boolean };
 }

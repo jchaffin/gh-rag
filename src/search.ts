@@ -3,7 +3,23 @@ import fs from "fs/promises";
 import path from "path";
 import { OpenAI } from "openai";
 
+// Simple in-memory TTL cache
+type CacheEntry<T> = { value: T; expires: number };
+const embedCache = new Map<string, CacheEntry<number[]>>();
+const searchCache = new Map<string, CacheEntry<any[]>>();
+const NOW = () => Date.now();
+function getCache<T>(map: Map<string, CacheEntry<T>>, key: string): T | undefined {
+  const hit = map.get(key);
+  if (!hit) return undefined;
+  if (hit.expires < NOW()) { map.delete(key); return undefined; }
+  return hit.value;
+}
+function setCache<T>(map: Map<string, CacheEntry<T>>, key: string, value: T, ttlMs: number) {
+  map.set(key, { value, expires: NOW() + ttlMs });
+}
+
 type Cfg = { workdir: string; openaiApiKey: string; pine: { index: any } };
+const DEBUG = !!process.env.DEBUG;
 
 async function readBM25IfExists(filePath: string) {
   try {
@@ -30,12 +46,16 @@ async function loadMini(repoPath: string) {
 }
 
 async function embedQuery(openaiApiKey: string, query: string) {
+  const model = process.env.OPENAI_EMBED_MODEL || "text-embedding-3-large";
+  const cacheKey = `${model}|${query}`;
+  const cached = getCache(embedCache, cacheKey);
+  if (cached) return cached;
   const openai = new OpenAI({ apiKey: openaiApiKey });
-  const r = await openai.embeddings.create({
-    model: "text-embedding-3-large",
-    input: query
-  });
-  return r.data[0].embedding;
+  const r = await openai.embeddings.create({ model, input: query });
+  const vec = r.data[0].embedding;
+  // Cache embeddings briefly to smooth bursts
+  setCache(embedCache, cacheKey, vec, 60_000);
+  return vec;
 }
 
 function rrf(
@@ -48,6 +68,7 @@ function rrf(
   const ra = rank(a);
   const rb = rank(b);
   const ids = new Set([...a.map(x => x.id), ...b.map(x => x.id)]);
+  // @ts-ignore: ignore downlevel iteration warning for Set spread
   return [...ids]
     .map(id => ({
       id,
@@ -61,10 +82,15 @@ export async function hybridSearch(
   { workdir, openaiApiKey, pine, repo, query }: Cfg & { repo: string; query: string }
 ) {
   const repoPath = path.join(workdir, repo);
-  console.log("Search path:", repoPath);
+  if (DEBUG) console.log("Search path:", repoPath);
   
+  // Short-lived result cache for identical queries
+  const skey = `${repo}|${query}`;
+  const cached = getCache<any[]>(searchCache, skey);
+  if (cached) return cached;
+
   const mini = await loadMini(repoPath);
-  console.log("Mini search loaded:", !!mini);
+  if (DEBUG) console.log("Mini search loaded:", !!mini);
 
   // BM25
   const bm = mini
@@ -73,26 +99,27 @@ export async function hybridSearch(
         .slice(0, 40)
         .map(r => ({ id: r.id, score: r.score }))
     : [];
-  console.log("BM25 results:", bm.length);
+  if (DEBUG) console.log("BM25 results:", bm.length);
 
   // Pinecone KNN
-  console.log("Searching for repo:", repo);
+  if (DEBUG) console.log("Searching for repo:", repo);
   const vec = await embedQuery(openaiApiKey, query);
-  console.log("Vector length:", vec.length);
+  if (DEBUG) console.log("Vector length:", vec.length);
   
   const pineResults = await pine.index.query({
     vector: vec,
     topK: 40,
-    includeMetadata: true
+    includeMetadata: true,
+    filter: { repo: { $eq: repo } }
   });
-  console.log("Pinecone results:", pineResults);
-  console.log("Pinecone matches:", pineResults.matches?.length || 0);
+  if (DEBUG) console.log("Pinecone results:", pineResults);
+  if (DEBUG) console.log("Pinecone matches:", pineResults.matches?.length || 0);
   
   const knn = (pineResults.matches || []).map((m: any) => ({
     id: m.id as string,
     score: m.score || 0
   }));
-  console.log("KNN results:", knn.length);
+  if (DEBUG) console.log("KNN results:", knn.length);
 
   // Fuse
   const fused = rrf(bm, knn).slice(0, 20);
@@ -102,5 +129,12 @@ export async function hybridSearch(
     (pineResults.matches || []).map((m: any) => [m.id as string, m.metadata])
   );
 
-  return fused.map(f => metaById[f.id]).filter(Boolean);
+  if (DEBUG) console.log("First metadata example:", pineResults.matches?.[0]?.metadata);
+  if (DEBUG) console.log("Metadata mapping keys:", Object.keys(metaById));
+  if (DEBUG) console.log("Metadata mapping:", metaById);
+  if (DEBUG) console.log("Fused results:", fused);
+
+  const results = fused.map(f => metaById[f.id]).filter(Boolean);
+  setCache(searchCache, skey, results, 10_000); // 10s TTL
+  return results;
 }
