@@ -25,6 +25,9 @@ type IngestOpts = {
   workdir?: string; // default "."
   repoName?: string; // optional override
   githubToken?: string; // for GitHub API access
+  // If true, write a local BM25 jsonl alongside vectors.
+  // Default: false (opt-in only) to avoid creating local folders during ingest.
+  writeBm25?: boolean;
 };
 
 export async function ingestRepo(gitUrlOrPath: string, opts: IngestOpts) {
@@ -37,7 +40,7 @@ export async function ingestRepo(gitUrlOrPath: string, opts: IngestOpts) {
     if (!match) throw new Error('Invalid GitHub URL');
     
     const [owner, repo] = match[1].split('/');
-    const namespace = repo; // Use just the repo name, not owner/repo
+    const namespace = opts.pine.namespace ?? repo; // Namespace per repo by default
     
     if (process.env.DEBUG) console.log(`Fetching ${owner}/${repo} via GitHub API`);
     
@@ -46,6 +49,11 @@ export async function ingestRepo(gitUrlOrPath: string, opts: IngestOpts) {
     const docs = allFiles.map(f => ({ path: f.path, text: f.content }));
     
     const records = chunkDocs(repo, docs);
+
+    // Optionally write BM25 index for MiniSearch consumption
+    if (opts.writeBm25 || process.env.GH_RAG_WRITE_BM25 === '1') {
+      await writeBm25Index(repo, records, workdir);
+    }
     
     const vectors = await embedInBatches(
       opts.openaiApiKey,
@@ -59,7 +67,8 @@ export async function ingestRepo(gitUrlOrPath: string, opts: IngestOpts) {
     }
     
     // Upsert to Pinecone
-    const index = opts.pine.index;
+    const index = namespace ? opts.pine.index.namespace(namespace) : opts.pine.index;
+    if (process.env.DEBUG) console.log("Using namespace:", namespace || "<default>");
     if (process.env.DEBUG) console.log("Upserting", records.length, "records to Pinecone");
     
     for (let i = 0; i < records.length; i += BATCH_SIZE) {
@@ -96,6 +105,11 @@ export async function ingestRepo(gitUrlOrPath: string, opts: IngestOpts) {
 
     const records = chunkDocs(repo, docs);
 
+    // Optionally write BM25 index for MiniSearch consumption
+    if (opts.writeBm25 || process.env.GH_RAG_WRITE_BM25 === '1') {
+      await writeBm25Index(repo, records, workdir);
+    }
+
     const vectors = await embedInBatches(
       opts.openaiApiKey,
       records.map((r) => r.text),
@@ -108,7 +122,8 @@ export async function ingestRepo(gitUrlOrPath: string, opts: IngestOpts) {
     }
 
     // Upsert to Pinecone
-    const index = opts.pine.index;
+    const index = namespace ? opts.pine.index.namespace(namespace) : opts.pine.index;
+    if (process.env.DEBUG) console.log("Using namespace:", namespace || "<default>");
     if (process.env.DEBUG) console.log("Upserting", records.length, "records to Pinecone");
     
     for (let i = 0; i < records.length; i += BATCH_SIZE) {
@@ -297,6 +312,21 @@ function chunkDocs(repo: string, docs: { path: string; text: string }[]): Record
     }
   }
   return chunks;
+}
+
+// Persist a newline-delimited JSON file with { id, text } for BM25 search.
+// The search loader expects this at: path.join(workdir, repo, ".bm25.jsonl").
+async function writeBm25Index(repo: string, records: RecordChunk[], workdir: string) {
+  try {
+    const repoDir = path.join(workdir, repo);
+    await fs.mkdir(repoDir, { recursive: true });
+    const file = path.join(repoDir, ".bm25.jsonl");
+    const lines = records.map(r => JSON.stringify({ id: r.id, text: r.text }));
+    await fs.writeFile(file, lines.join("\n"), "utf8");
+    if (process.env.DEBUG) console.log(`Wrote BM25 index: ${file} (${lines.length} docs)`);
+  } catch (e) {
+    console.warn("Failed to write BM25 index:", (e as Error)?.message || e);
+  }
 }
 
 async function embedInBatches(apiKey: string, inputs: string[]): Promise<number[][]> {

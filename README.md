@@ -36,6 +36,7 @@ Server endpoint (Fastify):
 Notes:
 - Set `OPENAI_EMBED_MODEL` to match your ingested index (e.g., `text-embedding-3-small` for speed). Ingestion also respects this.
 - In-memory caching smooths identical queries for ~10s; embeddings cache for ~60s.
+- Local BM25 index is optional. By default, ingest does not write any local files. To enable BM25 text ranking (used by `ask` when available), either pass `writeBm25: true` to `ingestRepo`/`rag.ingest`, or set `GH_RAG_WRITE_BM25=1` and provide a `workdir` if you don't want `.`.
 
 ## CLI
 

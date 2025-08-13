@@ -1,4 +1,23 @@
-import MiniSearch from "minisearch";
+// Minisearch is ESM-only in newer versions, which breaks CJS require.
+// We lazy-load it via native dynamic import to support both.
+let MiniSearchCtor: any | null = null;
+async function loadMiniSearchCtor() {
+  if (MiniSearchCtor) return MiniSearchCtor;
+  try {
+    // Use Function constructor to avoid TS downleveling import() to require()
+    // which would fail for ESM-only packages.
+    const dynamicImport = new Function("m", "return import(m)") as (m: string) => Promise<any>;
+    const mod = await dynamicImport("minisearch");
+    MiniSearchCtor = mod.default ?? mod;
+    return MiniSearchCtor;
+  } catch (err) {
+    if (process.env.DEBUG) {
+      console.warn("MiniSearch unavailable; BM25 disabled:", (err as Error)?.message);
+    }
+    MiniSearchCtor = null;
+    return null;
+  }
+}
 import fs from "fs/promises";
 import path from "path";
 import { OpenAI } from "openai";
@@ -33,10 +52,12 @@ async function loadMini(repoPath: string) {
   const file = path.join(repoPath, ".bm25.jsonl");
   const content = await readBM25IfExists(file);
   if (!content) return null;
-  
+  const Mini = await loadMiniSearchCtor();
+  if (!Mini) return null; // gracefully skip BM25 if minisearch can't load
+
   const lines = content.trim().split("\n");
   const docs = lines.map(l => JSON.parse(l));
-  const mini = new MiniSearch({
+  const mini = new Mini({
     fields: ["text"],
     storeFields: ["text"],
     idField: "id"
@@ -97,7 +118,7 @@ export async function hybridSearch(
     ? mini
         .search(query, { prefix: true })
         .slice(0, 40)
-        .map(r => ({ id: r.id, score: r.score }))
+        .map((r: any) => ({ id: r.id, score: r.score }))
     : [];
   if (DEBUG) console.log("BM25 results:", bm.length);
 

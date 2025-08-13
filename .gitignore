@@ -3,3 +3,6 @@ node_modules
 *.lock
 repos/*
 dist/*
+src/**/*.js
+src/**/*.js.map
+.DS_Store

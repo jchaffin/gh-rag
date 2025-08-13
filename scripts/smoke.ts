@@ -7,8 +7,8 @@ import path from "path";
 
 config({ path: resolve(process.cwd(), ".env.local"), override: true });
 
-import { createGhRag } from "../src";
-import { ingestRepo } from "../src/ingest";
+import { createGhRag } from "@lib";
+import { ingestRepo } from "@lib/ingest";
 
 function mask(v?: string) {
   return v ? v.slice(0, 6) + "…" + v.slice(-4) : "";

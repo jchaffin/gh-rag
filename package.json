@@ -3,23 +3,19 @@
   "version": "0.1.0",
   "description": "Hybrid RAG over GitHub repos: BM25 + Pinecone + cited answers.",
   "type": "commonjs",
-  "main": "src/index.js",
-  "types": "src/types.ts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "bin": {
     "gh-rag-ask": "./dist/scripts/ask.js",
     "gh-rag-ingest-all": "./dist/scripts/ingest-all.js"
   },
-  "exports": {
-    ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
-    }
-  },
+
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsc && tsc-alias",
+    "clean": "rm -rf dist && find src -type f -name '*.js' -delete && find src -type f -name '*.js.map' -delete",
+    "build": "npm run clean && tsc -p tsconfig.lib.json && tsc-alias -p tsconfig.lib.json && tsc -p tsconfig.scripts.json && tsc-alias -p tsconfig.scripts.json",
     "prepublishOnly": "npm run build",
     "smoke": "npm run build && node dist/scripts/smoke.js",
     "start": "node dist/server.js",
@@ -46,7 +42,7 @@
   "devDependencies": {
     "@types/glob": "^9.0.0",
     "@types/micromatch": "^4.0.9",
-    "@types/node": "^22.5.1",
+    "@types/node": "^24.2.1",
     "typescript": "^5.6.2"
   },
   "engines": {

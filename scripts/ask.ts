@@ -2,7 +2,7 @@
 import { config } from "dotenv";
 import { resolve } from "path";
 import { Pinecone } from "@pinecone-database/pinecone";
-import { createGhRag } from "../src";
+import { createGhRag } from "@lib";
 
 config({ path: resolve(process.cwd(), ".env.local"), override: true });
 
