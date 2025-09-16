@@ -3,7 +3,7 @@ import { config } from "dotenv";
 import { resolve } from "path";
 import { Pinecone } from "@pinecone-database/pinecone";
 import pLimit from "p-limit";
-import { ingestRepo } from "@lib/ingest";
+import { ingestRepo } from "@/lib/ingest";
 
 config({ path: resolve(process.cwd(), ".env.local"), override: true });
 

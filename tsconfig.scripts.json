@@ -6,8 +6,8 @@
     "declaration": false,
     "baseUrl": ".",
     "paths": {
-      "@lib": ["dist/index"],
-      "@lib/*": ["dist/*"]
+      "@/lib": ["dist/index"],
+      "@/lib/*": ["dist/*"]
     }
   },
   "include": ["scripts/**/*"],

@@ -3,9 +3,8 @@ import { config } from "dotenv";
 import { resolve } from "path";
 import { Pinecone } from "@pinecone-database/pinecone";
 
+import { ingestRepo } from "@/lib/ingest";
 config({ path: resolve(process.cwd(), ".env.local"), override: true });
-
-import { ingestRepo } from "@lib/ingest";
 
 function mask(v?: string) {
   return v ? v.slice(0, 6) + "…" + v.slice(-4) : "";

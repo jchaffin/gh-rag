@@ -1,0 +1,20 @@
+# .github/workflows/ingest-on-push.yml
+name: Ingest this repo on push
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger central ingest server
+        run: |
+          curl -sS -X POST "$INGEST_SERVER_URL/ingest" \
+            -H "Content-Type: application/json" \
+            -d "{\"gitUrl\":\"https://github.com/${{ github.repository }}.git\"}" \
+            -H "Authorization: Bearer $INGEST_TOKEN"
+        env:
+          INGEST_SERVER_URL: ${{ secrets.INGEST_SERVER_URL }}  # e.g., https://rag.example.com
+          INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}            # match your server check if added
