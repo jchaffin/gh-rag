@@ -8,6 +8,7 @@ import type { PineCtx, IngestOpts } from "./types";
 export type { PineCtx, IngestOpts };
 
 const MODEL = process.env.OPENAI_EMBED_MODEL ?? "text-embedding-3-large";
+const CHAT_MODEL = process.env.OPENAI_CHAT_MODEL ?? "gpt-4o-mini";
 const MODEL_DIMS: Record<string, number> = {
   "text-embedding-3-large": 3072,
   "text-embedding-3-small": 1536,
@@ -15,6 +16,72 @@ const MODEL_DIMS: Record<string, number> = {
 const MAX_TOKENS = 8192;
 const CHUNK_TOKENS = 4000; // Reduced from 6000 to stay well under 8192 limit
 const BATCH_SIZE = 64;
+
+// Use LLM to detect tech stack from repo files
+async function detectTechStack(apiKey: string, files: { path: string; text: string }[]): Promise<string[]> {
+  // Get key files that indicate tech stack
+  const keyFiles = files.filter(f => 
+    /^(package\.json|requirements\.txt|Cargo\.toml|go\.mod|pom\.xml|build\.gradle|Gemfile|composer\.json|pyproject\.toml|setup\.py|CMakeLists\.txt|Makefile|Dockerfile|docker-compose\.ya?ml|\.github\/workflows\/.*\.ya?ml|tsconfig\.json|next\.config\.|vite\.config\.|webpack\.config\.)/.test(f.path) ||
+    f.path === 'README.md'
+  );
+
+  if (keyFiles.length === 0) {
+    // Fall back to file extensions
+    const exts = new Set(
+      files.map(f => f.path.split('.').pop()?.toLowerCase()).filter((e): e is string => !!e)
+    );
+    return Array.from(exts).slice(0, 10);
+  }
+
+  // Truncate file contents to avoid token limits
+  const context = keyFiles.map(f => {
+    const content = f.text.length > 2000 ? f.text.slice(0, 2000) + '...' : f.text;
+    return `--- ${f.path} ---\n${content}`;
+  }).join('\n\n').slice(0, 8000);
+
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: CHAT_MODEL,
+      messages: [
+        {
+          role: "system",
+          content: "You analyze codebases and identify the tech stack. Return ONLY a JSON array of strings with technologies, frameworks, languages, and tools used. Be specific (e.g., 'Next.js 14' not just 'React'). Include versions when apparent. Max 15 items, most important first."
+        },
+        {
+          role: "user", 
+          content: `Analyze this codebase and return the tech stack as a JSON array:\n\n${context}`
+        }
+      ],
+      max_tokens: 300,
+      temperature: 0,
+    }),
+  });
+
+  if (!res.ok) {
+    if (process.env.DEBUG) console.log("Tech stack detection failed:", await res.text());
+    return [];
+  }
+
+  const json = await res.json() as { choices: { message: { content: string } }[] };
+  const content = json.choices[0]?.message?.content?.trim() ?? "[]";
+  
+  try {
+    // Extract JSON array from response (handle markdown code blocks)
+    const match = content.match(/\[[\s\S]*\]/);
+    if (match) {
+      return JSON.parse(match[0]);
+    }
+  } catch {
+    if (process.env.DEBUG) console.log("Failed to parse tech stack:", content);
+  }
+  
+  return [];
+}
 
 export async function ingestRepo(gitUrlOrPath: string, opts: IngestOpts) {
   const workdir = opts.workdir ?? ".";
@@ -34,6 +101,11 @@ export async function ingestRepo(gitUrlOrPath: string, opts: IngestOpts) {
     const allFiles = await fetchAllFilesFromGitHub(owner, repo);
     const docs = allFiles.map(f => ({ path: f.path, text: f.content }));
     
+    // Detect tech stack using LLM
+    if (process.env.DEBUG) console.log("Detecting tech stack...");
+    const techStack = await detectTechStack(opts.openaiApiKey, docs);
+    if (process.env.DEBUG) console.log("Tech stack:", techStack);
+    
     const records = chunkDocs(repo, docs);
 
     // Optionally write BM25 index for MiniSearch consumption
@@ -73,6 +145,7 @@ export async function ingestRepo(gitUrlOrPath: string, opts: IngestOpts) {
             end: r.end,
             tokens: r.tokens,
             model: MODEL,
+            techStack: techStack.join(", "),
             text: r.text,
           }),
         }))
@@ -80,7 +153,7 @@ export async function ingestRepo(gitUrlOrPath: string, opts: IngestOpts) {
     }
     if (process.env.DEBUG) console.log("Pinecone upsert complete");
     
-    return { repo, namespace, files: docs.length, chunks: records.length, model: MODEL };
+    return { repo, namespace, files: docs.length, chunks: records.length, model: MODEL, techStack };
   } else {
     // Local path handling
     const repo = opts.repoName ?? repoIdFromPathOrUrl(gitUrlOrPath);
@@ -89,6 +162,11 @@ export async function ingestRepo(gitUrlOrPath: string, opts: IngestOpts) {
     const files = await listRepoFiles(gitUrlOrPath);
     const docs = await readFiles(gitUrlOrPath, files);
 
+    // Detect tech stack using LLM
+    if (process.env.DEBUG) console.log("Detecting tech stack...");
+    const techStack = await detectTechStack(opts.openaiApiKey, docs);
+    if (process.env.DEBUG) console.log("Tech stack:", techStack);
+
     const records = chunkDocs(repo, docs);
 
     // Optionally write BM25 index for MiniSearch consumption
@@ -128,6 +206,7 @@ export async function ingestRepo(gitUrlOrPath: string, opts: IngestOpts) {
             end: r.end,
             tokens: r.tokens,
             model: MODEL,
+            techStack: techStack.join(", "),
             text: r.text,
           }),
         })),
@@ -135,7 +214,7 @@ export async function ingestRepo(gitUrlOrPath: string, opts: IngestOpts) {
     }
     if (process.env.DEBUG) console.log("Pinecone upsert complete");
 
-    return { repo, namespace, files: files.length, chunks: records.length, model: MODEL };
+    return { repo, namespace, files: files.length, chunks: records.length, model: MODEL, techStack };
   }
 }
 
