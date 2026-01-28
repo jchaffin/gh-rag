@@ -237,10 +237,17 @@ async function fetchAllFilesFromGitHub(owner: string, repo: string): Promise<{ p
     const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
     if (process.env.DEBUG) console.log(`Fetching: ${apiUrl}`);
     
+    const ghToken = process.env.GITHUB_TOKEN;
+    // gh CLI uses OAuth tokens (gho_) which need Bearer auth; PATs use token auth
+    const authHeader = ghToken?.startsWith('gho_') 
+      ? `Bearer ${ghToken}` 
+      : `token ${ghToken}`;
+    
     const response = await fetch(apiUrl, {
       headers: {
-        ...(process.env.GITHUB_TOKEN && { Authorization: `token ${process.env.GITHUB_TOKEN}` }),
-        ...(process.env.GITHUB_USERNAME && { 'User-Agent': process.env.GITHUB_USERNAME })
+        ...(ghToken && { Authorization: authHeader }),
+        'User-Agent': process.env.GITHUB_USERNAME || 'gh-rag',
+        'Accept': 'application/vnd.github+json',
       }
     });
     
