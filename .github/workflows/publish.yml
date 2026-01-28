@@ -9,11 +9,14 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # Skip if commit message contains [skip ci]
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/setup-node@v4
@@ -32,10 +35,38 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Bump version and publish
+      - name: Get published version
+        id: published
         run: |
-          npm version patch -m "chore: bump version to %s [skip ci]"
+          PUBLISHED=$(npm view @jchaffin/gh-rag version 2>/dev/null || echo "0.0.0")
+          echo "version=$PUBLISHED" >> $GITHUB_OUTPUT
+          echo "Published version: $PUBLISHED"
+
+      - name: Get local version
+        id: local
+        run: |
+          LOCAL=$(node -p "require('./package.json').version")
+          echo "version=$LOCAL" >> $GITHUB_OUTPUT
+          echo "Local version: $LOCAL"
+
+      - name: Bump and publish if needed
+        run: |
+          PUBLISHED="${{ steps.published.outputs.version }}"
+          LOCAL="${{ steps.local.outputs.version }}"
+          
+          # If local version is already published, bump it
+          if npm view @jchaffin/gh-rag@$LOCAL version 2>/dev/null; then
+            echo "Version $LOCAL already published, bumping..."
+            npm version patch --no-git-tag-version
+            NEW_VERSION=$(node -p "require('./package.json').version")
+            git add package.json package-lock.json
+            git commit -m "chore: bump version to $NEW_VERSION [skip ci]"
+          fi
+          
+          # Publish
           npm publish --access public
-          git push --follow-tags
+          
+          # Push changes back
+          git push
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
