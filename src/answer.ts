@@ -1,13 +1,9 @@
 // src/answer.ts
 import { OpenAI } from "openai";
 import { hybridSearch } from "./search.js";
+import type { Cfg, AnswerResult } from "./types";
 
-type Cfg = { workdir: string; openaiApiKey: string; pine: { index: any } };
-
-export type AnswerResult = {
-  text: string;                 // final answer (cited)
-  used: { path: string; start: number; end: number }[]; // snippets referenced
-};
+export type { AnswerResult };
 
 export async function answerAboutProject(
   { workdir, openaiApiKey, pine, repo, question }: Cfg & { repo: string; question: string }

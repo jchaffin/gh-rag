@@ -3,18 +3,15 @@ import { Pinecone } from "@pinecone-database/pinecone";
 import { config as loadEnv } from "dotenv";
 import { resolve } from "path";
 import { existsSync } from "fs";
+import type { PCVector } from "./types";
+
+export type { PCVector };
 
 if (existsSync(resolve(process.cwd(), ".env.local"))) {
   loadEnv({ path: resolve(process.cwd(), ".env.local"), override: true });
 } else {
   loadEnv(); // fallback to .env
 }
-
-export type PCVector = {
-  id: string;
-  values: number[];
-metadata?: Record<string, any>;
-};
 
 const DEFAULTS = {
   index: process.env.PINECONE_INDEX ?? "repo-chunks",

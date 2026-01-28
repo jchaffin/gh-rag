@@ -3,11 +3,10 @@ import { ingestRepo } from "./ingest";
 import { hybridSearch } from "./search";
 import { answerAboutProject } from "./answer";
 import { askFast } from "./ask";
+import type { CreateOpts } from "./types";
 
-export type CreateOpts = {
-  openaiApiKey: string;
-  githubToken?: string; // optional, for private repos or higher API limits
-};
+export type { CreateOpts };
+export * from "./types";
 
 export function createGhRag(opts: CreateOpts & { pine: { index: any } }) {
   const cfg = {

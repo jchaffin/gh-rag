@@ -3,7 +3,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { glob } from "glob";
 import { encode, decode } from "gpt-tokenizer";
-import type { Pinecone } from "@pinecone-database/pinecone";
+import type { PineCtx, IngestOpts } from "./types";
+
+export type { PineCtx, IngestOpts };
 
 const MODEL = process.env.OPENAI_EMBED_MODEL ?? "text-embedding-3-large";
 const MODEL_DIMS: Record<string, number> = {
@@ -13,22 +15,6 @@ const MODEL_DIMS: Record<string, number> = {
 const MAX_TOKENS = 8192;
 const CHUNK_TOKENS = 4000; // Reduced from 6000 to stay well under 8192 limit
 const BATCH_SIZE = 64;
-
-export type PineCtx = {
-  index: ReturnType<Pinecone["index"]>;
-  namespace?: string;
-};
-
-type IngestOpts = {
-  openaiApiKey: string;
-  pine: PineCtx;
-  workdir?: string; // default "."
-  repoName?: string; // optional override
-  githubToken?: string; // for GitHub API access
-  // If true, write a local BM25 jsonl alongside vectors.
-  // Default: false (opt-in only) to avoid creating local folders during ingest.
-  writeBm25?: boolean;
-};
 
 export async function ingestRepo(gitUrlOrPath: string, opts: IngestOpts) {
   const workdir = opts.workdir ?? ".";

@@ -1,26 +1,24 @@
 {
   "name": "@jchaffin/gh-rag",
-  "version": "0.2.2",
+  "version": "0.3.2",
   "description": "Hybrid RAG over GitHub repos: BM25 + Pinecone + cited answers.",
   "type": "commonjs",
   "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "types": "dist/types/index.d.ts",
   "bin": {
-    "gh-rag-ask": "dist/scripts/ask.js",
-    "gh-rag-ingest-all": "dist/scripts/ingest-all.js"
+    "gh-rag": "dist/cli.js"
   },
   "files": [
     "dist"
   ],
   "scripts": {
     "clean": "rm -rf dist && find src -type f -name '*.js' -delete && find src -type f -name '*.js.map' -delete",
-    "build": "npm run clean && tsc -p tsconfig.lib.json && tsc-alias -p tsconfig.lib.json && tsc -p tsconfig.scripts.json && tsc-alias -p tsconfig.scripts.json",
+    "build": "npm run clean && tsc && tsc-alias",
     "prepublishOnly": "npm run build",
-    "smoke": "npm run build && node dist/scripts/smoke.js",
     "start": "node dist/server.js",
-    "ingest": "npm run build && node dist/scripts/ingest.js",
-    "ask": "node dist/scripts/ask.js",
-    "ingest:all": "npm run build && node dist/scripts/ingest-all.js"
+    "ingest": "npm run build && node dist/cli.js ingest",
+    "ask": "node dist/cli.js ask",
+    "ingest:all": "npm run build && node dist/cli.js ingest-all"
   },
   "dependencies": {
     "@pinecone-database/pinecone": "^6.1.2",
