@@ -19,25 +19,25 @@ const BATCH_SIZE = 64;
 
 // Use LLM to detect tech stack from repo files
 async function detectTechStack(apiKey: string, files: { path: string; text: string }[]): Promise<string[]> {
-  // Get key files that indicate tech stack
-  const keyFiles = files.filter(f => 
-    /^(package\.json|requirements\.txt|Cargo\.toml|go\.mod|pom\.xml|build\.gradle|Gemfile|composer\.json|pyproject\.toml|setup\.py|CMakeLists\.txt|Makefile|Dockerfile|docker-compose\.ya?ml|\.github\/workflows\/.*\.ya?ml|tsconfig\.json|next\.config\.|vite\.config\.|webpack\.config\.)/.test(f.path) ||
-    f.path === 'README.md'
-  );
+  if (files.length === 0) return [];
 
-  if (keyFiles.length === 0) {
-    // Fall back to file extensions
-    const exts = new Set(
-      files.map(f => f.path.split('.').pop()?.toLowerCase()).filter((e): e is string => !!e)
-    );
-    return Array.from(exts).slice(0, 10);
-  }
-
-  // Truncate file contents to avoid token limits
-  const context = keyFiles.map(f => {
-    const content = f.text.length > 2000 ? f.text.slice(0, 2000) + '...' : f.text;
+  // Build context: file tree + sample of file contents
+  const fileTree = files.map(f => f.path).join('\n');
+  
+  // Sample some files (prioritize root-level and config-looking files, but don't hardcode)
+  const sorted = [...files].sort((a, b) => {
+    const aDepth = a.path.split('/').length;
+    const bDepth = b.path.split('/').length;
+    return aDepth - bDepth; // Root files first
+  });
+  
+  const sampled = sorted.slice(0, 15);
+  const fileContents = sampled.map(f => {
+    const content = f.text.length > 1500 ? f.text.slice(0, 1500) + '...' : f.text;
     return `--- ${f.path} ---\n${content}`;
-  }).join('\n\n').slice(0, 8000);
+  }).join('\n\n');
+
+  const context = `FILE TREE:\n${fileTree.slice(0, 3000)}\n\nSAMPLE FILES:\n${fileContents}`.slice(0, 12000);
 
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
