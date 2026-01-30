@@ -145,7 +145,7 @@ export async function ingestRepo(gitUrlOrPath: string, opts: IngestOpts) {
             end: r.end,
             tokens: r.tokens,
             model: MODEL,
-            techStack: techStack.join(", "),
+            techStack: techStack, // Store as array for better filtering
             text: r.text,
           }),
         }))
@@ -206,7 +206,7 @@ export async function ingestRepo(gitUrlOrPath: string, opts: IngestOpts) {
             end: r.end,
             tokens: r.tokens,
             model: MODEL,
-            techStack: techStack.join(", "),
+            techStack: techStack, // Store as array for better filtering
             text: r.text,
           }),
         })),

@@ -73,3 +73,19 @@ export type AnswerResult = {
   text: string; // final answer (cited)
   used: { path: string; start: number; end: number }[]; // snippets referenced
 };
+
+// ─────────────────────────────────────────────────────────────
+// Skill/Technology search types
+// ─────────────────────────────────────────────────────────────
+
+export type FindBySkillOpts = {
+  skill: string;          // Skill/technology to search for (e.g., "Next.js", "TypeScript", "rag")
+  limit?: number;         // Max results (default: 20)
+};
+
+export type ProjectMatch = {
+  repo: string;           // Repository name/identifier
+  techStack: string[];    // Detected technologies
+  score: number;          // Relevance score
+  samplePaths: string[];  // Sample file paths from matches
+};

@@ -37,6 +37,8 @@ function setCache<T>(map: Map<string, CacheEntry<T>>, key: string, value: T, ttl
   map.set(key, { value, expires: NOW() + ttlMs });
 }
 
+import type { FindBySkillOpts, ProjectMatch } from "./types";
+
 type Cfg = { workdir: string; openaiApiKey: string; pine: { index: any } };
 const DEBUG = !!process.env.DEBUG;
 
@@ -157,5 +159,96 @@ export async function hybridSearch(
 
   const results = fused.map(f => metaById[f.id]).filter(Boolean);
   setCache(searchCache, skey, results, 10_000); // 10s TTL
+  return results;
+}
+
+/**
+ * Find projects that use a specific skill/technology.
+ * Searches across all repos using semantic search on the skill name,
+ * then groups and ranks results by repo.
+ */
+export async function findProjectsBySkill(
+  { openaiApiKey, pine, skill, limit = 20 }: Omit<Cfg, "workdir"> & FindBySkillOpts
+): Promise<ProjectMatch[]> {
+  // Cache key for this skill search
+  const cacheKey = `skill:${skill}`;
+  const cached = getCache<ProjectMatch[]>(searchCache, cacheKey);
+  if (cached) return cached;
+
+  // Embed the skill/technology name for semantic search
+  const vec = await embedQuery(openaiApiKey, skill);
+  if (DEBUG) console.log(`Searching for skill: "${skill}"`);
+
+  // Query Pinecone without repo filter to search across all projects
+  const pineResults = await pine.index.query({
+    vector: vec,
+    topK: 100, // Get more results to aggregate by repo
+    includeMetadata: true,
+  });
+
+  if (DEBUG) console.log("Pinecone matches:", pineResults.matches?.length || 0);
+
+  // Group results by repo
+  const repoMap = new Map<string, {
+    score: number;
+    techStack: Set<string>;
+    paths: Set<string>;
+    matchCount: number;
+  }>();
+
+  for (const match of pineResults.matches || []) {
+    const meta = match.metadata as any;
+    if (!meta?.repo) continue;
+
+    const repo = meta.repo as string;
+    
+    // Handle both array format (new) and comma-separated string format (legacy)
+    let techStackArr: string[];
+    if (Array.isArray(meta.techStack)) {
+      techStackArr = meta.techStack;
+    } else {
+      const techStackStr = (meta.techStack as string) || "";
+      techStackArr = techStackStr.split(",").map((s: string) => s.trim()).filter(Boolean);
+    }
+
+    // Check if this repo's techStack contains the skill (case-insensitive)
+    const skillLower = skill.toLowerCase();
+    const hasSkill = techStackArr.some((t: string) => 
+      t.toLowerCase().includes(skillLower) || skillLower.includes(t.toLowerCase())
+    );
+
+    // Boost score if techStack explicitly contains the skill
+    const scoreBoost = hasSkill ? 1.5 : 1.0;
+    const adjustedScore = (match.score || 0) * scoreBoost;
+
+    const existing = repoMap.get(repo);
+    if (existing) {
+      existing.score = Math.max(existing.score, adjustedScore);
+      existing.matchCount++;
+      techStackArr.forEach((t: string) => existing.techStack.add(t));
+      if (meta.path) existing.paths.add(meta.path);
+    } else {
+      repoMap.set(repo, {
+        score: adjustedScore,
+        techStack: new Set(techStackArr),
+        paths: new Set(meta.path ? [meta.path] : []),
+        matchCount: 1,
+      });
+    }
+  }
+
+  // Convert to array and sort by score
+  const results: ProjectMatch[] = Array.from(repoMap.entries())
+    .map(([repo, data]) => ({
+      repo,
+      techStack: Array.from(data.techStack),
+      score: data.score,
+      samplePaths: Array.from(data.paths).slice(0, 5),
+    }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+
+  // Cache results
+  setCache(searchCache, cacheKey, results, 30_000); // 30s TTL
   return results;
 }

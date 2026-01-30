@@ -1,6 +1,6 @@
 // src/index.ts
 import { ingestRepo } from "./ingest";
-import { hybridSearch } from "./search";
+import { hybridSearch, findProjectsBySkill } from "./search";
 import { answerAboutProject } from "./answer";
 import { askFast } from "./ask";
 import type { CreateOpts } from "./types";
@@ -27,6 +27,8 @@ export function createGhRag(opts: CreateOpts & { pine: { index: any } }) {
     ask: (p: { repo: string; query: string; limit?: number; includeText?: boolean }) =>
       askFast({ ...cfg, repo: p.repo, query: p.query, limit: p.limit, includeText: p.includeText }),
     answer: (p: { repo: string; question: string }) =>
-      answerAboutProject({ ...cfg, repo: p.repo, question: p.question })
+      answerAboutProject({ ...cfg, repo: p.repo, question: p.question }),
+    findBySkill: (p: { skill: string; limit?: number }) =>
+      findProjectsBySkill({ openaiApiKey: cfg.openaiApiKey, pine: cfg.pine, skill: p.skill, limit: p.limit })
   };
 }

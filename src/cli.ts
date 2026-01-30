@@ -62,6 +62,79 @@ function getPinecone(apiKey: string, indexName: string) {
 // Commands
 // ─────────────────────────────────────────────────────────────
 
+async function cmdFind(args: string[]) {
+  const opts: Record<string, any> = {};
+  const rest: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "-h" || a === "--help") { opts.help = true; continue; }
+    if (a === "--json") { opts.json = true; continue; }
+    if (a === "--debug") { opts.debug = true; continue; }
+    if (a === "-s" || a === "--skill") { opts.skill = args[++i]; continue; }
+    if (a === "-l" || a === "--limit") { opts.limit = Number(args[++i]); continue; }
+    if (a === "--index") { opts.index = args[++i]; continue; }
+    if (!a.startsWith("-")) rest.push(a);
+  }
+
+  if (!opts.skill && rest.length) opts.skill = rest.join(" ");
+
+  if (opts.help) {
+    console.log(`
+gh-rag find - Find projects by skill/technology
+
+Usage:
+  gh-rag find --skill <name>
+  gh-rag find "TypeScript"
+  gh-rag find -s "Next.js"
+
+Options:
+  -s, --skill <name>       Skill/technology to search for
+  -l, --limit <n>          Max results (default: 20)
+      --index <name>       Pinecone index name
+      --json               Output JSON
+      --debug              Debug logging
+  -h, --help               Show help
+`);
+    return;
+  }
+
+  if (opts.debug) process.env.DEBUG = "1";
+
+  const env = requireEnv("OPENAI_API_KEY", "PINECONE_API_KEY");
+  const indexName = opts.index || env.PINECONE_INDEX;
+
+  if (!opts.skill) {
+    console.error("Missing --skill or skill name");
+    process.exit(1);
+  }
+
+  const index = getPinecone(env.PINECONE_API_KEY!, indexName);
+  const rag = createGhRag({
+    openaiApiKey: env.OPENAI_API_KEY!,
+    githubToken: env.GITHUB_TOKEN,
+    pine: { index },
+  });
+
+  const results = await rag.findBySkill({ skill: opts.skill, limit: opts.limit });
+
+  if (opts.json) {
+    console.log(JSON.stringify(results, null, 2));
+  } else {
+    if (results.length === 0) {
+      console.log(`\nNo projects found with skill: "${opts.skill}"`);
+      return;
+    }
+    console.log(`\nProjects with "${opts.skill}" (${results.length} found):\n`);
+    for (const r of results) {
+      console.log(`  ${r.repo}`);
+      console.log(`    Tech: ${r.techStack.slice(0, 5).join(", ")}${r.techStack.length > 5 ? "..." : ""}`);
+      console.log(`    Score: ${r.score.toFixed(3)}`);
+      console.log();
+    }
+  }
+}
+
 async function cmdAsk(args: string[]) {
   const opts: Record<string, any> = {};
   const rest: string[] = [];
@@ -327,6 +400,7 @@ Usage:
   gh-rag <command> [options]
 
 Commands:
+  find         Find projects by skill/technology
   ask          Ask questions about an ingested repo
   ingest       Ingest specific GitHub repos
   ingest-all   Ingest all repos from user or org
@@ -347,6 +421,9 @@ async function main() {
   }
 
   switch (cmd) {
+    case "find":
+      await cmdFind(args);
+      break;
     case "ask":
       await cmdAsk(args);
       break;
