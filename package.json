@@ -1,6 +1,6 @@
 {
   "name": "@jchaffin/gh-rag",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "description": "Hybrid RAG over GitHub repos: BM25 + Pinecone + cited answers.",
   "type": "commonjs",
   "main": "dist/index.js",
