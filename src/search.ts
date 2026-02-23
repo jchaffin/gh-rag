@@ -102,39 +102,43 @@ function rrf(
 }
 
 export async function hybridSearch(
-  { workdir, openaiApiKey, pine, repo, query }: Cfg & { repo: string; query: string }
+  { workdir, openaiApiKey, pine, repo, query }: Cfg & { repo?: string; query: string }
 ) {
-  const repoPath = path.join(workdir, repo);
-  if (DEBUG) console.log("Search path:", repoPath);
-  
   // Short-lived result cache for identical queries
-  const skey = `${repo}|${query}`;
+  const skey = `${repo || '_all'}|${query}`;
   const cached = getCache<any[]>(searchCache, skey);
   if (cached) return cached;
 
-  const mini = await loadMini(repoPath);
-  if (DEBUG) console.log("Mini search loaded:", !!mini);
+  // BM25 local search only works when a specific repo is provided
+  let bm: { id: string; score: number }[] = [];
+  if (repo) {
+    const repoPath = path.join(workdir, repo);
+    if (DEBUG) console.log("Search path:", repoPath);
+    const mini = await loadMini(repoPath);
+    if (DEBUG) console.log("Mini search loaded:", !!mini);
+    bm = mini
+      ? mini
+          .search(query, { prefix: true })
+          .slice(0, 40)
+          .map((r: any) => ({ id: r.id, score: r.score }))
+      : [];
+    if (DEBUG) console.log("BM25 results:", bm.length);
+  }
 
-  // BM25
-  const bm = mini
-    ? mini
-        .search(query, { prefix: true })
-        .slice(0, 40)
-        .map((r: any) => ({ id: r.id, score: r.score }))
-    : [];
-  if (DEBUG) console.log("BM25 results:", bm.length);
-
-  // Pinecone KNN
-  if (DEBUG) console.log("Searching for repo:", repo);
+  // Pinecone KNN — use repo's namespace when specified
+  if (DEBUG) console.log("Searching for repo:", repo || "(all repos)");
   const vec = await embedQuery(openaiApiKey, query);
   if (DEBUG) console.log("Vector length:", vec.length);
   
-  const pineResults = await pine.index.query({
+  const pineQuery: any = {
     vector: vec,
-    topK: 40,
+    topK: repo ? 40 : 80,
     includeMetadata: true,
-    filter: { repo: { $eq: repo } }
-  });
+  };
+  
+  // Query the repo's namespace if specified, otherwise query default namespace
+  const indexToQuery = repo ? pine.index.namespace(repo) : pine.index;
+  const pineResults = await indexToQuery.query(pineQuery);
   if (DEBUG) console.log("Pinecone results:", pineResults);
   if (DEBUG) console.log("Pinecone matches:", pineResults.matches?.length || 0);
   
@@ -144,7 +148,7 @@ export async function hybridSearch(
   }));
   if (DEBUG) console.log("KNN results:", knn.length);
 
-  // Fuse
+  // Fuse (BM25 may be empty when searching all repos)
   const fused = rrf(bm, knn).slice(0, 20);
 
   // Map IDs back to metadata

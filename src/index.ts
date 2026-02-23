@@ -22,7 +22,7 @@ export function createGhRag(opts: CreateOpts & { pine: { index: any } }) {
         openaiApiKey: cfg.openaiApiKey,
         pine: cfg.pine
       }),
-    search: (p: { repo: string; query: string }) =>
+    search: (p: { repo?: string; query: string }) =>
       hybridSearch({ ...cfg, repo: p.repo, query: p.query }),
     ask: (p: { repo: string; query: string; limit?: number; includeText?: boolean }) =>
       askFast({ ...cfg, repo: p.repo, query: p.query, limit: p.limit, includeText: p.includeText }),
