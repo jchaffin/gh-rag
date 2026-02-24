@@ -29,7 +29,7 @@
     "micromatch": "^4.0.8",
     "minimatch": "^10.0.3",
     "minisearch": "^7.1.2",
-    "openai": "^5.12.2",
+    "openai": "^6.17.0",
     "p-limit": "^6.2.0",
     "simple-git": "^3.28.0",
     "ts-config": "^20.10.0",
