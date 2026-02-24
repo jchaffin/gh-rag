@@ -32,7 +32,7 @@
     "openai": "^6.17.0",
     "p-limit": "^6.2.0",
     "simple-git": "^3.28.0",
-    "ts-config": "^20.10.0",
+    "ts-config": "^20.0.1",
     "ts-node": "^10.9.2",
     "tsc-alias": "^1.8.16"
   },
