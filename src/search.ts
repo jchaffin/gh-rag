@@ -191,7 +191,10 @@ export async function hybridSearch(
   if (DEBUG) console.log("Fused results:", fused);
 
   const results = fused.map(f => metaById[f.id]).filter(Boolean);
-  setCache(searchCache, skey, results, 10_000); // 10s TTL
+  // Do not cache empty results — avoids "stuck" no-hit answers for ~10s right after ingest completes.
+  if (results.length > 0) {
+    setCache(searchCache, skey, results, 10_000); // 10s TTL
+  }
   return results;
 }
 

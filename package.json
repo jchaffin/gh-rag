@@ -1,6 +1,6 @@
 {
   "name": "@jchaffin/gh-rag",
-  "version": "0.3.12",
+  "version": "0.4.0",
   "description": "Hybrid RAG over GitHub repos: BM25 + Pinecone + cited answers.",
   "type": "commonjs",
   "main": "dist/index.js",
@@ -26,7 +26,7 @@
     "fastify": "^5.4.0",
     "glob": "^11.0.3",
     "gpt-tokenizer": "^3.0.1",
-    "micromatch": "^4.0.8",
+    "ignore": "^7.0.5",
     "minimatch": "^10.0.3",
     "minisearch": "^7.1.2",
     "openai": "^6.17.0",
@@ -38,7 +38,6 @@
   },
   "devDependencies": {
     "@types/glob": "^9.0.0",
-    "@types/micromatch": "^4.0.9",
     "@types/node": "^24.2.1",
     "typescript": "^5.6.2"
   },

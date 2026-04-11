@@ -21,16 +21,16 @@ function usage() {
 gh-rag ask - Ask questions about a repo
 
 Usage:
-  gh-rag-ask --repo <name> --question <text>
-  gh-rag-ask -r <name> -q <text>
-  gh-rag-ask -r <name> "What does X do?"
+  gh-rag-ask --repo <owner/name> --question <text>
+  gh-rag-ask -r ProsodyAI/prosodyai -q <text>
+  gh-rag-ask -r ProsodyAI/website "What does X do?"
 
  Ingest:
    gh-rag-ask --repo-url <git_url> [--repo <name>] [--question <text>]
    - If --question is provided, ingests then answers in one run.
 
 Options:
-  -r, --repo <name>        Repo identifier used during ingest (e.g., joblaunch)
+  -r, --repo <name>        Repo id from ingest (GitHub: owner/repo, e.g. ProsodyAI/prosodyai)
   -q, --question <text>    Question to ask (or pass as positional)
       --index <name>       Pinecone index name (default: env PINECONE_INDEX or repo-chunks)
   -u, --repo-url <git>     GitHub repo URL or local path to ingest before asking

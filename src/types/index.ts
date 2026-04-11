@@ -84,7 +84,7 @@ export type FindBySkillOpts = {
 };
 
 export type ProjectMatch = {
-  repo: string;           // Repository name/identifier
+  repo: string;           // Repository id (GitHub ingests: owner/repo)
   techStack: string[];    // Detected technologies
   score: number;          // Relevance score
   samplePaths: string[];  // Sample file paths from matches

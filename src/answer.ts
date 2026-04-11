@@ -13,6 +13,17 @@ export async function answerAboutProject(
 
   // Build compact, cited context (cap 12 chunks)
   const top = (ctx || []).slice(0, 10);
+
+  // Never call the LLM with no evidence — it will invent stack and APIs.
+  if (!top.length) {
+    const text =
+      `No indexed snippets for Pinecone namespace "${repo}". ` +
+      `Use -r / --repo exactly matching the ingest id: GitHub ingests use owner/repo (e.g. ProsodyAI/prosodyai). ` +
+      `If the index was wiped, finish ingest for that repo first. ` +
+      `Optional: GH_RAG_WRITE_BM25=1 during ingest plus a workdir containing ./${repo}/.bm25.jsonl enables local BM25 when vectors are missing.`;
+    return { text, used: [] };
+  }
+
   const used = top.map((c: any) => ({ path: c.path, start: c.start, end: c.end }));
   const context = top.map((c: any, i: number) => {
     const snippet = c.text.length > 1200 ? c.text.slice(0, 1200) + "\n…" : c.text;

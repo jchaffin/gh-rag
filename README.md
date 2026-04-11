@@ -9,7 +9,7 @@ const rag = await createGhRag({
 await rag.ingest({ gitUrl: "https://github.com/owner/repo.git" });
 
 const { text } = await rag.answer({
-  repo: "repo",
+  repo: "owner/repo",
   question: "Tell me about the payments project"
 });
 console.log(text);
@@ -25,16 +25,16 @@ const rag = createGhRag({
   pine: { index: /* Pinecone index handle */ } as any,
 });
 
-const snippets = await rag.ask({ repo: "repo", query: "auth flow", limit: 6 });
+const snippets = await rag.ask({ repo: "owner/repo", query: "auth flow", limit: 6 });
 // Each snippet: { path, start, end, text }
 ```
 
 Server endpoint (Fastify):
 - Start: `npm run build && npm run start`
-- POST http://localhost:3000/ask with JSON `{ "repo": "repo", "query": "auth flow", "limit": 6 }`
+- POST http://localhost:3000/ask with JSON `{ "repo": "owner/repo", "query": "auth flow", "limit": 6 }` (GitHub ingests: use `owner/repo`, same as Pinecone namespace)
 
 Notes:
-- **Pinecone namespaces:** Ingestion stores vectors in a **per-repo namespace** (the repo slug). Search and `ask` scope to one repo’s namespace; **`findBySkill` / cross-repo discovery** queries every namespace returned by `describeIndexStats` (not only the default namespace), so skill/tech search works across all ingested repos.
+- **Pinecone namespaces:** For **GitHub** URLs, ingestion uses one namespace per repository, named **`owner/repo`** (GitHub `full_name` style, e.g. `ProsodyAI/website`). For **local paths**, the namespace is the repo folder name (or `repoName` if you pass it). Search and `ask` must use that same string. **`findBySkill`** / cross-repo discovery still queries every namespace returned by index stats (not only the default namespace).
 - Set `OPENAI_EMBED_MODEL` to match your ingested index (e.g., `text-embedding-3-small` for speed). Ingestion also respects this.
 - In-memory caching smooths identical queries for ~10s; embeddings cache for ~60s.
 - Local BM25 index is optional. By default, ingest does not write any local files. To enable BM25 text ranking (used by `ask` when available), either pass `writeBm25: true` to `ingestRepo`/`rag.ingest`, or set `GH_RAG_WRITE_BM25=1` and provide a `workdir` if you don't want `.`.
@@ -52,18 +52,18 @@ Examples:
 npm run build
 
 # Ask (uses env REPO and QUESTION if set)
-npm run ask -- --repo my-repo --question "What does the auth flow look like?"
+npm run ask -- --repo owner/repo --question "What does the auth flow look like?"
 
 # With JSON output
-npm run ask -- -r my-repo -q "Key modules?" --json
+npm run ask -- -r owner/repo -q "Key modules?" --json
 
 # If installed globally (after publish or npm link)
-gh-rag-ask -r my-repo "How do I run this?"
+gh-rag-ask -r ProsodyAI/prosodyai "How do I run this?"
 
-# Ingest a repo (GitHub URL or local path)
-npm run ask -- --repo-url https://github.com/owner/repo.git --repo repo
+# Ingest a repo (GitHub URL or local path). After GitHub ingest, `rag.ingest` returns `repo` as owner/repo.
+npm run ask -- --repo-url https://github.com/owner/repo.git --repo owner/repo
 
-# Ingest then immediately ask in one command
+# Ingest then immediately ask in one command (repo defaults from ingest when omitted after --repo-url)
 npm run ask -- --repo-url https://github.com/owner/repo.git -q "What are the core services?"
 
 # Ingest ALL your GitHub repos (requires GITHUB_TOKEN)

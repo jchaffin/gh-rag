@@ -2,7 +2,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { glob } from "glob";
-import micromatch from "micromatch";
+import ignore from "ignore";
+import pLimit from "p-limit";
 import { encode, decode } from "gpt-tokenizer";
 import type { PineCtx, IngestOpts } from "./types";
 
@@ -17,6 +18,41 @@ const MODEL_DIMS: Record<string, number> = {
 const MAX_TOKENS = 8192;
 const CHUNK_TOKENS = 4000; // Reduced from 6000 to stay well under 8192 limit
 const BATCH_SIZE = 64;
+
+/** Path segments we never ingest (deps, caches, build trees) — applied even if .gitignore is missing. */
+const ALWAYS_IGNORE_DIR_SEGMENTS = new Set([
+  "node_modules",
+  "jspm_packages",
+  "bower_components",
+  "__pycache__",
+  ".pytest_cache",
+  ".tox",
+  ".venv",
+  "venv",
+  ".mypy_cache",
+  ".ruff_cache",
+  ".pnpm-store",
+  "Pods",
+  "Carthage",
+  ".gradle",
+  "coverage",
+  ".nyc_output",
+  ".next",
+  ".nuxt",
+  ".output",
+  ".turbo",
+  ".parcel-cache",
+]);
+
+function pathTouchesIgnoredSegment(relPath: string): boolean {
+  const norm = relPath.replace(/\\/g, "/").replace(/^\/+/, "");
+  return norm.split("/").some((seg) => ALWAYS_IGNORE_DIR_SEGMENTS.has(seg));
+}
+
+function clampInt(n: number, lo: number, hi: number): number {
+  if (!Number.isFinite(n)) return lo;
+  return Math.max(lo, Math.min(hi, Math.floor(n)));
+}
 
 // Use LLM to detect tech stack from repo files
 async function detectTechStack(apiKey: string, files: { path: string; text: string }[]): Promise<string[]> {
@@ -94,9 +130,11 @@ export async function ingestRepo(gitUrlOrPath: string, opts: IngestOpts) {
     if (!match) throw new Error('Invalid GitHub URL');
     
     const [owner, repo] = match[1].split('/');
-    const namespace = opts.pine.namespace ?? repo; // Namespace per repo by default
-    
-    if (process.env.DEBUG) console.log(`Fetching ${owner}/${repo} via GitHub API`);
+    // Full `owner/repo` avoids Pinecone namespace collisions (e.g. ProsodyAI/api vs other orgs).
+    const repoId = `${owner}/${repo}`;
+    const namespace = opts.pine.namespace ?? repoId;
+
+    if (process.env.DEBUG) console.log(`Fetching ${repoId} via GitHub API`);
     
     // Fetch all files recursively from GitHub API
     const allFiles = await fetchAllFilesFromGitHub(owner, repo);
@@ -107,11 +145,11 @@ export async function ingestRepo(gitUrlOrPath: string, opts: IngestOpts) {
     const techStack = await detectTechStack(opts.openaiApiKey, docs);
     if (process.env.DEBUG) console.log("Tech stack:", techStack);
     
-    const records = chunkDocs(repo, docs);
+    const records = chunkDocs(repoId, docs);
 
     // Optionally write BM25 index for MiniSearch consumption
     if (opts.writeBm25 || process.env.GH_RAG_WRITE_BM25 === '1') {
-      await writeBm25Index(repo, records, workdir);
+      await writeBm25Index(repoId, records, workdir);
     }
     
     const vectors = await embedInBatches(
@@ -129,32 +167,10 @@ export async function ingestRepo(gitUrlOrPath: string, opts: IngestOpts) {
     const index = namespace ? opts.pine.index.namespace(namespace) : opts.pine.index;
     if (process.env.DEBUG) console.log("Using namespace:", namespace || "<default>");
     if (process.env.DEBUG) console.log("Upserting", records.length, "records to Pinecone");
-    
-    for (let i = 0; i < records.length; i += BATCH_SIZE) {
-      const sliceRecs = records.slice(i, i + BATCH_SIZE);
-      const sliceVecs = vectors.slice(i, i + BATCH_SIZE);
-      if (process.env.DEBUG) console.log(`Upserting batch ${i/BATCH_SIZE + 1}:`, sliceRecs.length, "records");
-      
-      await index.upsert(
-        sliceRecs.map((r, j) => ({
-          id: r.id,
-          values: sliceVecs[j],
-          metadata: fitMetadata({
-            repo: r.repo,
-            path: r.path,
-            start: r.start,
-            end: r.end,
-            tokens: r.tokens,
-            model: MODEL,
-            techStack: techStack, // Store as array for better filtering
-            text: r.text,
-          }),
-        }))
-      );
-    }
+    await upsertChunkBatches(index, records, vectors, techStack);
     if (process.env.DEBUG) console.log("Pinecone upsert complete");
     
-    return { repo, namespace, files: docs.length, chunks: records.length, model: MODEL, techStack };
+    return { repo: repoId, namespace, files: docs.length, chunks: records.length, model: MODEL, techStack };
   } else {
     // Local path handling
     const repo = opts.repoName ?? repoIdFromPathOrUrl(gitUrlOrPath);
@@ -190,29 +206,7 @@ export async function ingestRepo(gitUrlOrPath: string, opts: IngestOpts) {
     const index = namespace ? opts.pine.index.namespace(namespace) : opts.pine.index;
     if (process.env.DEBUG) console.log("Using namespace:", namespace || "<default>");
     if (process.env.DEBUG) console.log("Upserting", records.length, "records to Pinecone");
-    
-    for (let i = 0; i < records.length; i += BATCH_SIZE) {
-      const sliceRecs = records.slice(i, i + BATCH_SIZE);
-      const sliceVecs = vectors.slice(i, i + BATCH_SIZE);
-      if (process.env.DEBUG) console.log(`Upserting batch ${i/BATCH_SIZE + 1}:`, sliceRecs.length, "records");
-      
-      await index.upsert(
-        sliceRecs.map((r, j) => ({
-          id: r.id,
-          values: sliceVecs[j],
-          metadata: fitMetadata({
-            repo: r.repo,
-            path: r.path,
-            start: r.start,
-            end: r.end,
-            tokens: r.tokens,
-            model: MODEL,
-            techStack: techStack, // Store as array for better filtering
-            text: r.text,
-          }),
-        })),
-      );
-    }
+    await upsertChunkBatches(index, records, vectors, techStack);
     if (process.env.DEBUG) console.log("Pinecone upsert complete");
 
     return { repo, namespace, files: files.length, chunks: records.length, model: MODEL, techStack };
@@ -232,10 +226,29 @@ async function listRepoFiles(root: string) {
   const patterns = [
     "**/*",
     "!**/node_modules/**",
+    "!**/jspm_packages/**",
+    "!**/bower_components/**",
+    "!**/__pycache__/**",
+    "!**/.pytest_cache/**",
+    "!**/.tox/**",
+    "!**/.venv/**",
+    "!**/venv/**",
+    "!**/.mypy_cache/**",
+    "!**/.ruff_cache/**",
+    "!**/.pnpm-store/**",
+    "!**/Pods/**",
+    "!**/Carthage/**",
+    "!**/.gradle/**",
+    "!**/coverage/**",
+    "!**/.nyc_output/**",
+    "!**/.next/**",
+    "!**/.nuxt/**",
+    "!**/.output/**",
+    "!**/.turbo/**",
+    "!**/.parcel-cache/**",
     "!**/.git/**",
     "!**/dist/**",
     "!**/build/**",
-    "!**/.next/**",
     "!**/*.png",
     "!**/*.jpg",
     "!**/*.jpeg",
@@ -278,6 +291,7 @@ function isProbablyTextPath(p: string) {
 async function readFiles(root: string, files: string[]) {
   const out: { path: string; text: string }[] = [];
   for (const rel of files) {
+    if (pathTouchesIgnoredSegment(rel)) continue;
     const abs = path.join(root, rel);
     try {
       const buf = await fs.readFile(abs);
@@ -292,45 +306,30 @@ async function readFiles(root: string, files: string[]) {
   return out;
 }
 
-function parseGitignore(raw: string): string[] {
-  return raw
-    .split('\n')
-    .map(l => l.trim())
-    .filter(l => l && !l.startsWith('#'));
+/** Correct gitignore semantics (negations, order) — micromatch was matching nearly every path. */
+function buildIgnoreMatcherFromRaw(raw: string): (filePath: string) => boolean {
+  const trimmed = raw.trim();
+  if (!trimmed) return () => false;
+  const ig = ignore().add(trimmed);
+  return (filePath: string) => ig.ignores(filePath);
 }
 
-function buildIgnoreMatcher(patterns: string[]): (filePath: string) => boolean {
-  if (patterns.length === 0) return () => false;
-  const globs = patterns.flatMap(p => {
-    const neg = p.startsWith('!');
-    const pat = neg ? p.slice(1) : p;
-    const clean = pat.replace(/^\//, '');
-    const results: string[] = [];
-    const prefix = neg ? '!' : '';
-    results.push(`${prefix}${clean}`);
-    results.push(`${prefix}${clean}/**`);
-    if (!clean.includes('/')) {
-      results.push(`${prefix}**/${clean}`);
-      results.push(`${prefix}**/${clean}/**`);
-    }
-    return results;
-  });
-  return (filePath: string) => micromatch.isMatch(filePath, globs, { dot: true });
-}
-
-async function fetchGitignore(owner: string, repo: string, ghHeaders: Record<string, string>): Promise<string[]> {
+async function fetchGitignoreRaw(
+  owner: string,
+  repo: string,
+  ghHeaders: Record<string, string>,
+): Promise<string> {
   try {
     const res = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/contents/.gitignore`,
-      { headers: ghHeaders }
+      { headers: ghHeaders },
     );
-    if (!res.ok) return [];
+    if (!res.ok) return "";
     const data = await res.json() as { download_url?: string };
-    if (!data.download_url) return [];
-    const raw = await (await fetch(data.download_url)).text();
-    return parseGitignore(raw);
+    if (!data.download_url) return "";
+    return await (await fetch(data.download_url)).text();
   } catch {
-    return [];
+    return "";
   }
 }
 
@@ -348,9 +347,12 @@ async function fetchAllFilesFromGitHub(owner: string, repo: string): Promise<{ p
     'Accept': 'application/vnd.github+json',
   };
 
-  const ignorePatterns = await fetchGitignore(owner, repo, ghHeaders);
-  if (process.env.DEBUG) console.log(`Loaded ${ignorePatterns.length} .gitignore patterns`);
-  const isIgnored = buildIgnoreMatcher(ignorePatterns);
+  const gitignoreRaw = await fetchGitignoreRaw(owner, repo, ghHeaders);
+  if (process.env.DEBUG) {
+    const lines = gitignoreRaw.split("\n").filter((l) => l.trim() && !l.trim().startsWith("#"));
+    console.log(`Loaded .gitignore (${lines.length} rule lines)`);
+  }
+  const isIgnored = buildIgnoreMatcherFromRaw(gitignoreRaw);
 
   async function fetchDirectory(dirPath: string = '') {
     if (processedPaths.has(dirPath)) return;
@@ -368,27 +370,51 @@ async function fetchAllFilesFromGitHub(owner: string, repo: string): Promise<{ p
 
     const contents = (await response.json()) as GhContentItem[];
 
+    const fileItems: GhContentItem[] = [];
+    const dirItems: GhContentItem[] = [];
     for (const item of contents) {
+      if (pathTouchesIgnoredSegment(item.path)) {
+        if (process.env.DEBUG) console.log(`Hard-ignored (deps/cache): ${item.path}`);
+        continue;
+      }
       if (isIgnored(item.path)) {
         if (process.env.DEBUG) console.log(`Ignored: ${item.path}`);
         continue;
       }
-
-      if (item.type === 'file' && isProbablyTextPath(item.name)) {
-        try {
-          const fileResponse = await fetch(String(item.download_url));
-          const content = await fileResponse.text();
-          files.push({ path: item.path, content });
-          if (process.env.DEBUG) console.log(`Fetched: ${item.path}`);
-        } catch (e) {
-          if (process.env.DEBUG) console.log(`Failed to fetch ${item.path}:`, e);
-        }
-      } else if (item.type === 'dir') {
-        await fetchDirectory(item.path);
-      }
+      if (item.type === "file" && isProbablyTextPath(item.name)) fileItems.push(item);
+      else if (item.type === "dir") dirItems.push(item);
     }
 
-    await new Promise(resolve => setTimeout(resolve, 100));
+    const fileDlLimit = pLimit(24);
+    const fileRows = await Promise.all(
+      fileItems.map((item) =>
+        fileDlLimit(async () => {
+          if (!item.download_url) return null;
+          try {
+            const fileResponse = await fetch(String(item.download_url));
+            const content = await fileResponse.text();
+            if (process.env.DEBUG) console.log(`Fetched: ${item.path}`);
+            return { path: item.path, content };
+          } catch (e) {
+            if (process.env.DEBUG) console.log(`Failed to fetch ${item.path}:`, e);
+            return null;
+          }
+        }),
+      ),
+    );
+    for (const row of fileRows) {
+      if (row) files.push(row);
+    }
+
+    const subdirLimit = pLimit(10);
+    await Promise.all(dirItems.map((item) => subdirLimit(() => fetchDirectory(item.path))));
+
+    const dirCooldownMs = Number(
+      process.env.GH_RAG_GITHUB_DIR_MS ?? (ghToken ? 40 : 100),
+    );
+    if (Number.isFinite(dirCooldownMs) && dirCooldownMs > 0) {
+      await new Promise((r) => setTimeout(r, dirCooldownMs));
+    }
   }
 
   await fetchDirectory();
@@ -437,6 +463,45 @@ function chunkDocs(repo: string, docs: { path: string; text: string }[]): Record
 
 // Persist a newline-delimited JSON file with { id, text } for BM25 search.
 // The search loader expects this at: path.join(workdir, repo, ".bm25.jsonl").
+async function upsertChunkBatches(
+  index: { upsert: (data: any[]) => Promise<void> },
+  records: RecordChunk[],
+  vectors: number[][],
+  techStack: string[],
+) {
+  const parallel = clampInt(Number(process.env.GH_RAG_PINECONE_PARALLEL ?? 4), 1, 8);
+  const limit = pLimit(parallel);
+  const starts: number[] = [];
+  for (let i = 0; i < records.length; i += BATCH_SIZE) starts.push(i);
+  await Promise.all(
+    starts.map((i) =>
+      limit(async () => {
+        const sliceRecs = records.slice(i, i + BATCH_SIZE);
+        const sliceVecs = vectors.slice(i, i + BATCH_SIZE);
+        if (process.env.DEBUG) {
+          console.log(`Upserting batch ${i / BATCH_SIZE + 1}:`, sliceRecs.length, "records");
+        }
+        await index.upsert(
+          sliceRecs.map((r, j) => ({
+            id: r.id,
+            values: sliceVecs[j],
+            metadata: fitMetadata({
+              repo: r.repo,
+              path: r.path,
+              start: r.start,
+              end: r.end,
+              tokens: r.tokens,
+              model: MODEL,
+              techStack,
+              text: r.text,
+            }),
+          })),
+        );
+      }),
+    ),
+  );
+}
+
 async function writeBm25Index(repo: string, records: RecordChunk[], workdir: string) {
   try {
     const repoDir = path.join(workdir, repo);
@@ -451,17 +516,29 @@ async function writeBm25Index(repo: string, records: RecordChunk[], workdir: str
 }
 
 async function embedInBatches(apiKey: string, inputs: string[]): Promise<number[][]> {
-  const out: number[][] = [];
+  type Batch = { start: number; inputs: string[] };
+  const batches: Batch[] = [];
   for (let i = 0; i < inputs.length; i += BATCH_SIZE) {
-    const batch = inputs.slice(i, i + BATCH_SIZE);
-    // sanity: ensure none exceed limit
-    for (const s of batch) {
+    const slice = inputs.slice(i, i + BATCH_SIZE);
+    for (const s of slice) {
       const t = encode(s).length;
       if (t > MAX_TOKENS) throw new Error(`Chunk exceeds ${MAX_TOKENS} tokens: ${t}`);
     }
-    const vecs = await embedBatch(apiKey, batch);
-    out.push(...vecs);
+    batches.push({ start: i, inputs: slice });
   }
+  const parallel = clampInt(Number(process.env.GH_RAG_EMBED_PARALLEL ?? 4), 1, 8);
+  const limit = pLimit(parallel);
+  const parts = await Promise.all(
+    batches.map((b) =>
+      limit(async () => {
+        const vecs = await embedBatch(apiKey, b.inputs);
+        return { start: b.start, vecs };
+      }),
+    ),
+  );
+  parts.sort((a, b) => a.start - b.start);
+  const out: number[][] = [];
+  for (const p of parts) out.push(...p.vecs);
   return out;
 }
 

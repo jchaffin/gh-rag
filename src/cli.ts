@@ -160,11 +160,11 @@ async function cmdAsk(args: string[]) {
 gh-rag ask - Ask questions about a repo
 
 Usage:
-  gh-rag ask --repo <name> --question <text>
-  gh-rag ask -r <name> "What does X do?"
+  gh-rag ask --repo <owner/name> --question <text>
+  gh-rag ask -r ProsodyAI/prosodyai "What does X do?"
 
 Options:
-  -r, --repo <name>        Repo identifier
+  -r, --repo <name>        Repo id: GitHub = owner/repo (e.g. ProsodyAI/website); local ingest = folder slug
   -q, --question <text>    Question to ask
       --index <name>       Pinecone index name
       --json               Output JSON
@@ -296,16 +296,16 @@ gh-rag ingest-all - Ingest all repos from user or org
 
 Usage:
   gh-rag ingest-all [options]
-  gh-rag ingest-all --org <name>
+  gh-rag ingest-all --org ProsodyAI   # all repos in that GitHub org
 
 Options:
-      --org <name>         GitHub organization (default: your repos)
+      --org <name>         List / ingest every repo in this org (not your user account)
       --index <name>       Pinecone index name
       --affiliation <type> owner,collaborator,organization_member
       --visibility <type>  all|public|private
       --include-forks      Include forked repos
       --include-archived   Include archived repos
-      --concurrency <n>    Concurrent ingests (default: 2)
+      --concurrency <n>    Concurrent ingests (default: 4, max: 12)
       --dry-run            List without ingesting
       --debug              Debug logging
   -h, --help               Show help
@@ -372,7 +372,7 @@ Options:
   }
 
   const index = getPinecone(env.PINECONE_API_KEY!, indexName);
-  const limit = pLimit(Math.max(1, Math.min(opts.concurrency ?? 2, 5)));
+  const limit = pLimit(Math.max(1, Math.min(opts.concurrency ?? 4, 12)));
   let ok = 0, fail = 0;
 
   const tasks = filtered.map(repo => limit(async () => {
