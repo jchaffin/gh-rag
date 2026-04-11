@@ -1,4 +1,4 @@
-# .github/workflows/ingest-on-push.yml
+# .github/workflows/ingest-manual.yml
 # Manual only: avoids OpenAI/Pinecone cost and CI time on every commit.
 name: Ingest this repo
 on:
