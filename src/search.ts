@@ -20,6 +20,7 @@ async function loadMiniSearchCtor() {
 }
 import fs from "fs/promises";
 import path from "path";
+import pLimit from "p-limit";
 import { OpenAI } from "openai";
 
 // Simple in-memory TTL cache
@@ -99,6 +100,34 @@ function rrf(
         1 / (k + (ra[id] || 999)) + 1 / (k + (rb[id] || 999))
     }))
     .sort((x, y) => y.score - x.score);
+}
+
+/** Namespaces that contain vectors (default `""` + per-repo namespaces from ingest). */
+async function getNamespaceNames(index: any): Promise<string[]> {
+  try {
+    const stats = await index.describeIndexStats();
+    const entries = Object.entries(stats.namespaces || {}) as [string, { recordCount?: number }][];
+    if (entries.length > 0) {
+      entries.sort((a, b) => (b[1]?.recordCount ?? 0) - (a[1]?.recordCount ?? 0));
+      return entries.slice(0, 64).map(([name]) => name);
+    }
+  } catch (e) {
+    if (DEBUG) console.warn("describeIndexStats failed:", (e as Error)?.message);
+  }
+  if (typeof index.listNamespaces === "function") {
+    try {
+      const res = await index.listNamespaces(100);
+      const names = (res.namespaces || []).map((n: { name: string }) => n.name).filter(Boolean);
+      if (names.length > 0) return names.slice(0, 64);
+    } catch (e) {
+      if (DEBUG) console.warn("listNamespaces failed:", (e as Error)?.message);
+    }
+  }
+  return [""];
+}
+
+function indexForNamespace(index: any, ns: string) {
+  return ns ? index.namespace(ns) : index;
 }
 
 export async function hybridSearch(
@@ -183,14 +212,35 @@ export async function findProjectsBySkill(
   const vec = await embedQuery(openaiApiKey, skill);
   if (DEBUG) console.log(`Searching for skill: "${skill}"`);
 
-  // Query Pinecone without repo filter to search across all projects
-  const pineResults = await pine.index.query({
-    vector: vec,
-    topK: 100, // Get more results to aggregate by repo
-    includeMetadata: true,
-  });
+  // Ingest stores each repo in its own Pinecone namespace; the default namespace alone
+  // does not see those vectors — query every namespace and merge.
+  const index = pine.index;
+  const namespaces = await getNamespaceNames(index);
+  if (DEBUG) console.log(`findProjectsBySkill: querying ${namespaces.length} namespace(s)`);
 
-  if (DEBUG) console.log("Pinecone matches:", pineResults.matches?.length || 0);
+  const runLimited = pLimit(8);
+  const topKPerNs = Math.max(8, Math.min(40, Math.ceil(120 / Math.max(1, namespaces.length))));
+  const matchLists = await Promise.all(
+    namespaces.map((ns) =>
+      runLimited(async () => {
+        try {
+          const target = indexForNamespace(index, ns);
+          const res = await target.query({
+            vector: vec,
+            topK: topKPerNs,
+            includeMetadata: true,
+          });
+          return res.matches || [];
+        } catch (e) {
+          if (DEBUG) console.warn(`query namespace "${ns}":`, (e as Error)?.message);
+          return [];
+        }
+      })
+    )
+  );
+  const allMatches = matchLists.flat();
+
+  if (DEBUG) console.log("Pinecone matches (all namespaces):", allMatches.length);
 
   // Group results by repo
   const repoMap = new Map<string, {
@@ -200,7 +250,7 @@ export async function findProjectsBySkill(
     matchCount: number;
   }>();
 
-  for (const match of pineResults.matches || []) {
+  for (const match of allMatches) {
     const meta = match.metadata as any;
     if (!meta?.repo) continue;
 

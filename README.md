@@ -34,6 +34,7 @@ Server endpoint (Fastify):
 - POST http://localhost:3000/ask with JSON `{ "repo": "repo", "query": "auth flow", "limit": 6 }`
 
 Notes:
+- **Pinecone namespaces:** Ingestion stores vectors in a **per-repo namespace** (the repo slug). Search and `ask` scope to one repo’s namespace; **`findBySkill` / cross-repo discovery** queries every namespace returned by `describeIndexStats` (not only the default namespace), so skill/tech search works across all ingested repos.
 - Set `OPENAI_EMBED_MODEL` to match your ingested index (e.g., `text-embedding-3-small` for speed). Ingestion also respects this.
 - In-memory caching smooths identical queries for ~10s; embeddings cache for ~60s.
 - Local BM25 index is optional. By default, ingest does not write any local files. To enable BM25 text ranking (used by `ask` when available), either pass `writeBm25: true` to `ingestRepo`/`rag.ingest`, or set `GH_RAG_WRITE_BM25=1` and provide a `workdir` if you don't want `.`.
