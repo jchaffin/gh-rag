@@ -98,6 +98,9 @@ Options:
       --json               Output JSON
       --debug              Debug logging
   -h, --help               Show help
+
+Only lists repos where the skill appears in indexed chunk text or in
+the ingest-time tech-stack labels (no semantic-only fallback).
 `);
     return;
   }
@@ -125,13 +128,22 @@ Options:
     console.log(JSON.stringify(results, null, 2));
   } else {
     if (results.length === 0) {
-      console.log(`\nNo projects found with skill: "${opts.skill}"`);
+      console.log(
+        `\nNo projects with an explicit match for "${opts.skill}" ` +
+          `(indexed chunk text or ingest tech-stack label).`,
+      );
       return;
     }
-    console.log(`\nProjects with "${opts.skill}" (${results.length} found):\n`);
+    console.log(`\nProjects with explicit "${opts.skill}" (${results.length} found):\n`);
     for (const r of results) {
       console.log(`  ${r.repo}`);
       console.log(`    Tech: ${r.techStack.slice(0, 5).join(", ")}${r.techStack.length > 5 ? "..." : ""}`);
+      if (r.skillTechHints?.length) {
+        console.log(`    Stack match: ${r.skillTechHints.join(", ")}`);
+      }
+      if (r.skillEvidencePaths?.length) {
+        console.log(`    In text: ${r.skillEvidencePaths.join(", ")}`);
+      }
       console.log(`    Score: ${r.score.toFixed(3)}`);
       console.log();
     }

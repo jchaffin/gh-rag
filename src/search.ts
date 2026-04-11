@@ -102,6 +102,31 @@ function rrf(
     .sort((x, y) => y.score - x.score);
 }
 
+const MAX_SKILL_SEARCH_NAMESPACES = 400;
+
+function escapeRegExp(s: string) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** True if `text` names the skill as a token (not a semantic guess). */
+function skillNamedInChunkText(skill: string, text: string): boolean {
+  const q = skill.trim();
+  if (!q || !text) return false;
+  try {
+    const re = new RegExp(`(?:^|[^A-Za-z0-9_])${escapeRegExp(q)}(?![A-Za-z0-9_])`, "i");
+    return re.test(text);
+  } catch {
+    return text.toLowerCase().includes(q.toLowerCase());
+  }
+}
+
+function techLabelNamesSkill(skill: string, techLabel: string): boolean {
+  const s = skill.trim().toLowerCase();
+  const tl = techLabel.toLowerCase();
+  if (!s) return false;
+  return tl.includes(s);
+}
+
 /** Namespaces that contain vectors (default `""` + per-repo namespaces from ingest). */
 async function getNamespaceNames(index: any): Promise<string[]> {
   try {
@@ -109,7 +134,7 @@ async function getNamespaceNames(index: any): Promise<string[]> {
     const entries = Object.entries(stats.namespaces || {}) as [string, { recordCount?: number }][];
     if (entries.length > 0) {
       entries.sort((a, b) => (b[1]?.recordCount ?? 0) - (a[1]?.recordCount ?? 0));
-      return entries.slice(0, 64).map(([name]) => name);
+      return entries.slice(0, MAX_SKILL_SEARCH_NAMESPACES).map(([name]) => name);
     }
   } catch (e) {
     if (DEBUG) console.warn("describeIndexStats failed:", (e as Error)?.message);
@@ -118,7 +143,7 @@ async function getNamespaceNames(index: any): Promise<string[]> {
     try {
       const res = await index.listNamespaces(100);
       const names = (res.namespaces || []).map((n: { name: string }) => n.name).filter(Boolean);
-      if (names.length > 0) return names.slice(0, 64);
+      if (names.length > 0) return names.slice(0, MAX_SKILL_SEARCH_NAMESPACES);
     } catch (e) {
       if (DEBUG) console.warn("listNamespaces failed:", (e as Error)?.message);
     }
@@ -200,29 +225,29 @@ export async function hybridSearch(
 
 /**
  * Find projects that use a specific skill/technology.
- * Searches across all repos using semantic search on the skill name,
- * then groups and ranks results by repo.
+ * Uses vector search only to locate candidate chunks; a repo is returned only if
+ * the skill appears in ingest tech-stack labels or explicitly in chunk text (no semantic-only fallback).
  */
 export async function findProjectsBySkill(
   { openaiApiKey, pine, skill, limit = 20 }: Omit<Cfg, "workdir"> & FindBySkillOpts
 ): Promise<ProjectMatch[]> {
-  // Cache key for this skill search
-  const cacheKey = `skill:${skill}`;
+  const skillTrim = skill.trim();
+  const cacheKey = `skill:explicit:v1:${skillTrim}`;
   const cached = getCache<ProjectMatch[]>(searchCache, cacheKey);
   if (cached) return cached;
 
-  // Embed the skill/technology name for semantic search
-  const vec = await embedQuery(openaiApiKey, skill);
-  if (DEBUG) console.log(`Searching for skill: "${skill}"`);
+  const vec = await embedQuery(openaiApiKey, skillTrim);
+  if (DEBUG) console.log(`Searching for skill: "${skillTrim}"`);
 
-  // Ingest stores each repo in its own Pinecone namespace; the default namespace alone
-  // does not see those vectors — query every namespace and merge.
   const index = pine.index;
   const namespaces = await getNamespaceNames(index);
   if (DEBUG) console.log(`findProjectsBySkill: querying ${namespaces.length} namespace(s)`);
 
   const runLimited = pLimit(8);
-  const topKPerNs = Math.max(8, Math.min(40, Math.ceil(120 / Math.max(1, namespaces.length))));
+  const topKPerNs = Math.max(
+    16,
+    Math.min(60, Math.ceil(280 / Math.max(1, namespaces.length))),
+  );
   const matchLists = await Promise.all(
     namespaces.map((ns) =>
       runLimited(async () => {
@@ -245,21 +270,22 @@ export async function findProjectsBySkill(
 
   if (DEBUG) console.log("Pinecone matches (all namespaces):", allMatches.length);
 
-  // Group results by repo
-  const repoMap = new Map<string, {
+  type Agg = {
     score: number;
     techStack: Set<string>;
-    paths: Set<string>;
     matchCount: number;
-  }>();
+    evidencePathScore: Map<string, number>;
+    techHints: Set<string>;
+  };
+
+  const repoMap = new Map<string, Agg>();
 
   for (const match of allMatches) {
     const meta = match.metadata as any;
     if (!meta?.repo) continue;
 
     const repo = meta.repo as string;
-    
-    // Handle both array format (new) and comma-separated string format (legacy)
+
     let techStackArr: string[];
     if (Array.isArray(meta.techStack)) {
       techStackArr = meta.techStack;
@@ -268,44 +294,62 @@ export async function findProjectsBySkill(
       techStackArr = techStackStr.split(",").map((s: string) => s.trim()).filter(Boolean);
     }
 
-    // Check if this repo's techStack contains the skill (case-insensitive)
-    const skillLower = skill.toLowerCase();
-    const hasSkill = techStackArr.some((t: string) => 
-      t.toLowerCase().includes(skillLower) || skillLower.includes(t.toLowerCase())
-    );
+    const text = typeof meta.text === "string" ? meta.text : "";
+    const textNamesSkill = text && skillNamedInChunkText(skillTrim, text);
+    const stackHints = techStackArr.filter((t) => techLabelNamesSkill(skillTrim, t));
+    const stackHit = stackHints.length > 0;
+    if (!textNamesSkill && !stackHit) continue;
 
-    // Boost score if techStack explicitly contains the skill
-    const scoreBoost = hasSkill ? 1.5 : 1.0;
-    const adjustedScore = (match.score || 0) * scoreBoost;
+    const rawScore = match.score || 0;
+    const adjustedScore = rawScore * (stackHit ? 1.5 : 1.0);
 
+    const path = meta.path as string | undefined;
     const existing = repoMap.get(repo);
     if (existing) {
       existing.score = Math.max(existing.score, adjustedScore);
       existing.matchCount++;
       techStackArr.forEach((t: string) => existing.techStack.add(t));
-      if (meta.path) existing.paths.add(meta.path);
+      stackHints.forEach((t) => existing.techHints.add(t));
+      if (textNamesSkill && path) {
+        const prev = existing.evidencePathScore.get(path) ?? 0;
+        if (adjustedScore > prev) existing.evidencePathScore.set(path, adjustedScore);
+      }
     } else {
+      const evidencePathScore = new Map<string, number>();
+      if (textNamesSkill && path) evidencePathScore.set(path, adjustedScore);
+      const techHints = new Set(stackHints);
       repoMap.set(repo, {
         score: adjustedScore,
         techStack: new Set(techStackArr),
-        paths: new Set(meta.path ? [meta.path] : []),
         matchCount: 1,
+        evidencePathScore,
+        techHints,
       });
     }
   }
 
-  // Convert to array and sort by score
+  const evidencePathsRanked = (m: Map<string, number>) =>
+    [...m.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([p]) => p)
+      .slice(0, 8);
+
   const results: ProjectMatch[] = Array.from(repoMap.entries())
-    .map(([repo, data]) => ({
-      repo,
-      techStack: Array.from(data.techStack),
-      score: data.score,
-      samplePaths: Array.from(data.paths).slice(0, 5),
-    }))
+    .map(([repo, data]) => {
+      const skillEvidencePaths = evidencePathsRanked(data.evidencePathScore);
+      const skillTechHints = Array.from(data.techHints).slice(0, 12);
+      return {
+        repo,
+        techStack: Array.from(data.techStack),
+        score: data.score,
+        samplePaths: skillEvidencePaths,
+        ...(skillTechHints.length ? { skillTechHints } : {}),
+        ...(skillEvidencePaths.length ? { skillEvidencePaths } : {}),
+      };
+    })
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
 
-  // Cache results
-  setCache(searchCache, cacheKey, results, 30_000); // 30s TTL
+  setCache(searchCache, cacheKey, results, 30_000);
   return results;
 }

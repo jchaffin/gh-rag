@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1
+
+- **`find` / `findBySkill`:** Only returns repos where the skill appears in **indexed chunk text** (token-style match) or in **ingest-time tech-stack** labels. No semantic-only fallback; empty results mean no explicit hit.
+- CLI shows **Stack match** and **In text** (paths) when present.
+- Skill search scans up to **400** Pinecone namespaces (was 64) and uses slightly higher per-namespace `topK` to surface literal mentions.
+
 ## 0.4.0
 
 ### Breaking

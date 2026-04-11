@@ -87,5 +87,9 @@ export type ProjectMatch = {
   repo: string;           // Repository id (GitHub ingests: owner/repo)
   techStack: string[];    // Detected technologies
   score: number;          // Relevance score
-  samplePaths: string[];  // Sample file paths from matches
+  samplePaths: string[];  // Paths of chunks whose text names the skill (often empty if only stack matched)
+  /** Ingest-time stack entries whose label contains the skill query (substring match). */
+  skillTechHints?: string[];
+  /** Paths where indexed chunk text contains an explicit mention of the skill. */
+  skillEvidencePaths?: string[];
 };
