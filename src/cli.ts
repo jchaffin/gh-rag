@@ -37,9 +37,12 @@ function getEnv() {
   const {
     OPENAI_API_KEY,
     PINECONE_API_KEY,
-    PINECONE_INDEX = "repo-chunks",
     GITHUB_TOKEN,
   } = process.env;
+  const PINECONE_INDEX =
+    process.env.PINECONE_INDEX?.trim() ||
+    process.env.PINECONE_INDEX_NAME?.trim() ||
+    "repo-chunks";
   return { OPENAI_API_KEY, PINECONE_API_KEY, PINECONE_INDEX, GITHUB_TOKEN };
 }
 
@@ -388,6 +391,60 @@ Options:
   console.log(`Done. Success: ${ok}, Failed: ${fail}`);
 }
 
+/** Delete every vector in every namespace (uses PINECONE_INDEX from .env / env). */
+async function cmdWipe(args: string[]) {
+  let help = false;
+  let force = false;
+  let indexOverride: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "-h" || a === "--help") help = true;
+    else if (a === "--force") force = true;
+    else if (a === "--index") indexOverride = args[++i];
+  }
+  if (help) {
+    console.log(`
+gh-rag wipe - Delete ALL vectors in the Pinecone index (every namespace)
+
+Usage:
+  gh-rag wipe --force
+
+Run from your app repo root so .env.local is loaded (PINECONE_API_KEY, PINECONE_INDEX).
+
+Options:
+      --index <name>   Override index name (default: PINECONE_INDEX or PINECONE_INDEX_NAME)
+      --force          Required; otherwise the command refuses to run
+  -h, --help           Show help
+`);
+    return;
+  }
+  if (!force) {
+    console.error("Refusing to wipe without --force (deletes all vectors in all namespaces).");
+    process.exit(1);
+  }
+  const env = requireEnv("PINECONE_API_KEY");
+  const indexName = indexOverride || env.PINECONE_INDEX;
+  const pc = new Pinecone({ apiKey: env.PINECONE_API_KEY! });
+  const index = pc.index(indexName);
+  const stats = await index.describeIndexStats();
+  const nsMap = stats.namespaces ?? {};
+  const keys = Object.keys(nsMap);
+  if (keys.length === 0) {
+    console.log(`Index "${indexName}" has no namespaces in stats; running deleteAll on default namespace.`);
+    await index.deleteAll();
+    console.log("Done.");
+    return;
+  }
+  console.log(`Wiping index "${indexName}" — ${keys.length} namespace(s)`);
+  for (const ns of keys) {
+    const count = nsMap[ns]?.recordCount ?? "?";
+    const target = ns === "" ? index : index.namespace(ns);
+    console.log(`  deleteAll namespace ${JSON.stringify(ns)} (${count} records)`);
+    await target.deleteAll();
+  }
+  console.log("Done. Re-run gh-rag ingest with clean gh-rag@latest.");
+}
+
 // ─────────────────────────────────────────────────────────────
 // Main
 // ─────────────────────────────────────────────────────────────
@@ -404,11 +461,12 @@ Commands:
   ask          Ask questions about an ingested repo
   ingest       Ingest specific GitHub repos
   ingest-all   Ingest all repos from user or org
+  wipe         Delete ALL vectors in the index (needs --force)
 
 Run 'gh-rag <command> --help' for command-specific options.
 
 Environment:
-  OPENAI_API_KEY, PINECONE_API_KEY, PINECONE_INDEX, GITHUB_TOKEN
+  OPENAI_API_KEY, PINECONE_API_KEY, PINECONE_INDEX (or PINECONE_INDEX_NAME), GITHUB_TOKEN
 `);
 }
 
@@ -432,6 +490,9 @@ async function main() {
       break;
     case "ingest-all":
       await cmdIngestAll(args);
+      break;
+    case "wipe":
+      await cmdWipe(args);
       break;
     default:
       console.error(`Unknown command: ${cmd}`);

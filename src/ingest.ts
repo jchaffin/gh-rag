@@ -2,6 +2,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { glob } from "glob";
+import micromatch from "micromatch";
 import { encode, decode } from "gpt-tokenizer";
 import type { PineCtx, IngestOpts } from "./types";
 
@@ -291,39 +292,88 @@ async function readFiles(root: string, files: string[]) {
   return out;
 }
 
+function parseGitignore(raw: string): string[] {
+  return raw
+    .split('\n')
+    .map(l => l.trim())
+    .filter(l => l && !l.startsWith('#'));
+}
+
+function buildIgnoreMatcher(patterns: string[]): (filePath: string) => boolean {
+  if (patterns.length === 0) return () => false;
+  const globs = patterns.flatMap(p => {
+    const neg = p.startsWith('!');
+    const pat = neg ? p.slice(1) : p;
+    const clean = pat.replace(/^\//, '');
+    const results: string[] = [];
+    const prefix = neg ? '!' : '';
+    results.push(`${prefix}${clean}`);
+    results.push(`${prefix}${clean}/**`);
+    if (!clean.includes('/')) {
+      results.push(`${prefix}**/${clean}`);
+      results.push(`${prefix}**/${clean}/**`);
+    }
+    return results;
+  });
+  return (filePath: string) => micromatch.isMatch(filePath, globs, { dot: true });
+}
+
+async function fetchGitignore(owner: string, repo: string, ghHeaders: Record<string, string>): Promise<string[]> {
+  try {
+    const res = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/contents/.gitignore`,
+      { headers: ghHeaders }
+    );
+    if (!res.ok) return [];
+    const data = await res.json() as { download_url?: string };
+    if (!data.download_url) return [];
+    const raw = await (await fetch(data.download_url)).text();
+    return parseGitignore(raw);
+  } catch {
+    return [];
+  }
+}
+
 async function fetchAllFilesFromGitHub(owner: string, repo: string): Promise<{ path: string; content: string }[]> {
   const files: { path: string; content: string }[] = [];
   const processedPaths = new Set<string>();
-  
-  async function fetchDirectory(path: string = '') {
-    if (processedPaths.has(path)) return;
-    processedPaths.add(path);
-    
-    const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+
+  const ghToken = process.env.GITHUB_TOKEN;
+  const authHeader = ghToken?.startsWith('gho_')
+    ? `Bearer ${ghToken}`
+    : `token ${ghToken}`;
+  const ghHeaders: Record<string, string> = {
+    ...(ghToken && { Authorization: authHeader }),
+    'User-Agent': process.env.GITHUB_USERNAME || 'gh-rag',
+    'Accept': 'application/vnd.github+json',
+  };
+
+  const ignorePatterns = await fetchGitignore(owner, repo, ghHeaders);
+  if (process.env.DEBUG) console.log(`Loaded ${ignorePatterns.length} .gitignore patterns`);
+  const isIgnored = buildIgnoreMatcher(ignorePatterns);
+
+  async function fetchDirectory(dirPath: string = '') {
+    if (processedPaths.has(dirPath)) return;
+    processedPaths.add(dirPath);
+
+    const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${dirPath}`;
     if (process.env.DEBUG) console.log(`Fetching: ${apiUrl}`);
-    
-    const ghToken = process.env.GITHUB_TOKEN;
-    // gh CLI uses OAuth tokens (gho_) which need Bearer auth; PATs use token auth
-    const authHeader = ghToken?.startsWith('gho_') 
-      ? `Bearer ${ghToken}` 
-      : `token ${ghToken}`;
-    
-    const response = await fetch(apiUrl, {
-      headers: {
-        ...(ghToken && { Authorization: authHeader }),
-        'User-Agent': process.env.GITHUB_USERNAME || 'gh-rag',
-        'Accept': 'application/vnd.github+json',
-      }
-    });
-    
+
+    const response = await fetch(apiUrl, { headers: ghHeaders });
+
     if (!response.ok) {
-      if (process.env.DEBUG) console.log(`Skipping ${path}: ${response.status}`);
+      if (process.env.DEBUG) console.log(`Skipping ${dirPath}: ${response.status}`);
       return;
     }
-    
+
     const contents = (await response.json()) as GhContentItem[];
-    
+
     for (const item of contents) {
+      if (isIgnored(item.path)) {
+        if (process.env.DEBUG) console.log(`Ignored: ${item.path}`);
+        continue;
+      }
+
       if (item.type === 'file' && isProbablyTextPath(item.name)) {
         try {
           const fileResponse = await fetch(String(item.download_url));
@@ -337,11 +387,10 @@ async function fetchAllFilesFromGitHub(owner: string, repo: string): Promise<{ p
         await fetchDirectory(item.path);
       }
     }
-    
-    // Rate limiting
+
     await new Promise(resolve => setTimeout(resolve, 100));
   }
-  
+
   await fetchDirectory();
   return files;
 }
