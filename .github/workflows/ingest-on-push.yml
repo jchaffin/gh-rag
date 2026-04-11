@@ -1,8 +1,7 @@
 # .github/workflows/ingest-on-push.yml
-name: Ingest this repo on push
+# Manual only: avoids OpenAI/Pinecone cost and CI time on every commit.
+name: Ingest this repo
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
 
 jobs:
