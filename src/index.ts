@@ -20,6 +20,7 @@ export function createGhRag(opts: CreateOpts & { pine: { index: any } }) {
     ingest: (p: { gitUrl: string; ref?: string; fileGlobs?: string[] }) =>
       ingestRepo(p.gitUrl, {
         openaiApiKey: cfg.openaiApiKey,
+        githubToken: cfg.githubToken,
         pine: cfg.pine
       }),
     search: (p: { repo?: string; query: string }) =>

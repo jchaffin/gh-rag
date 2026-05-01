@@ -137,7 +137,7 @@ export async function ingestRepo(gitUrlOrPath: string, opts: IngestOpts) {
     if (process.env.DEBUG) console.log(`Fetching ${repoId} via GitHub API`);
     
     // Fetch all files recursively from GitHub API
-    const allFiles = await fetchAllFilesFromGitHub(owner, repo);
+    const allFiles = await fetchAllFilesFromGitHub(owner, repo, opts.githubToken);
     const docs = allFiles.map(f => ({ path: f.path, text: f.content }));
     
     // Detect tech stack using LLM
@@ -320,32 +320,41 @@ async function fetchGitignoreRaw(
   ghHeaders: Record<string, string>,
 ): Promise<string> {
   try {
+    // Use the raw-content accept header so installation tokens work on private repos.
     const res = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/contents/.gitignore`,
-      { headers: ghHeaders },
+      { headers: { ...ghHeaders, Accept: "application/vnd.github.raw" } },
     );
     if (!res.ok) return "";
-    const data = await res.json() as { download_url?: string };
-    if (!data.download_url) return "";
-    return await (await fetch(data.download_url)).text();
+    return await res.text();
   } catch {
     return "";
   }
 }
 
-async function fetchAllFilesFromGitHub(owner: string, repo: string): Promise<{ path: string; content: string }[]> {
+function buildGhHeaders(token?: string): Record<string, string> {
+  // GitHub App installation tokens (`ghs_…`) and user-to-server tokens (`gho_…`)
+  // both work with the `Bearer` scheme. Classic PATs accept `token` as a prefix.
+  const useBearer = token?.startsWith("ghs_") || token?.startsWith("gho_");
+  const authHeader = token ? (useBearer ? `Bearer ${token}` : `token ${token}`) : undefined;
+  return {
+    ...(authHeader && { Authorization: authHeader }),
+    'User-Agent': process.env.GITHUB_USERNAME || 'gh-rag',
+    'Accept': 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+  };
+}
+
+async function fetchAllFilesFromGitHub(
+  owner: string,
+  repo: string,
+  ghToken?: string,
+): Promise<{ path: string; content: string }[]> {
   const files: { path: string; content: string }[] = [];
   const processedPaths = new Set<string>();
 
-  const ghToken = process.env.GITHUB_TOKEN;
-  const authHeader = ghToken?.startsWith('gho_')
-    ? `Bearer ${ghToken}`
-    : `token ${ghToken}`;
-  const ghHeaders: Record<string, string> = {
-    ...(ghToken && { Authorization: authHeader }),
-    'User-Agent': process.env.GITHUB_USERNAME || 'gh-rag',
-    'Accept': 'application/vnd.github+json',
-  };
+  const effectiveToken = ghToken ?? process.env.GITHUB_TOKEN;
+  const ghHeaders = buildGhHeaders(effectiveToken);
 
   const gitignoreRaw = await fetchGitignoreRaw(owner, repo, ghHeaders);
   if (process.env.DEBUG) {
@@ -386,12 +395,19 @@ async function fetchAllFilesFromGitHub(owner: string, repo: string): Promise<{ p
     }
 
     const fileDlLimit = pLimit(24);
+    const rawHeaders = { ...ghHeaders, Accept: "application/vnd.github.raw" };
     const fileRows = await Promise.all(
       fileItems.map((item) =>
         fileDlLimit(async () => {
-          if (!item.download_url) return null;
+          // Use the raw content API so the same Authorization header works for
+          // private repos accessed via GitHub App installation tokens.
+          const rawUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${encodeURI(item.path)}`;
           try {
-            const fileResponse = await fetch(String(item.download_url));
+            const fileResponse = await fetch(rawUrl, { headers: rawHeaders });
+            if (!fileResponse.ok) {
+              if (process.env.DEBUG) console.log(`Skipping ${item.path}: ${fileResponse.status}`);
+              return null;
+            }
             const content = await fileResponse.text();
             if (process.env.DEBUG) console.log(`Fetched: ${item.path}`);
             return { path: item.path, content };
@@ -410,7 +426,7 @@ async function fetchAllFilesFromGitHub(owner: string, repo: string): Promise<{ p
     await Promise.all(dirItems.map((item) => subdirLimit(() => fetchDirectory(item.path))));
 
     const dirCooldownMs = Number(
-      process.env.GH_RAG_GITHUB_DIR_MS ?? (ghToken ? 40 : 100),
+      process.env.GH_RAG_GITHUB_DIR_MS ?? (effectiveToken ? 40 : 100),
     );
     if (Number.isFinite(dirCooldownMs) && dirCooldownMs > 0) {
       await new Promise((r) => setTimeout(r, dirCooldownMs));
